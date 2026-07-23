@@ -283,9 +283,28 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
     # that message with a visible notice instead of dropping it; otherwise the
     # model appears to "ignore" large pastes because it never receives them.
     # Hermes-style: recent context matters more than old context.
+    #
+    # "Current turn" is everything from the LAST role=user message onward, not
+    # just the literal last message. This function is called again before
+    # every round of a long agentic tool-calling loop (agent_loop.py), where by
+    # round N the trailing messages are assistant tool_calls / tool results —
+    # the last message is role=tool, not user. Protecting only that literal
+    # last message let the eviction below reach back far enough to drop the
+    # actual user request (it's no longer "last" once tool rounds pile up),
+    # producing a payload with zero user-role messages that some backends
+    # reject outright ("No user query found in messages").
     PROTECT_RECENT = 10
-    current_msg = convo_msgs[-1:] if convo_msgs else []
-    prior_convo = convo_msgs[:-1] if convo_msgs else []
+    last_user_idx = None
+    for _i in range(len(convo_msgs) - 1, -1, -1):
+        if convo_msgs[_i].get("role") == "user":
+            last_user_idx = _i
+            break
+    if last_user_idx is not None:
+        current_msg = convo_msgs[last_user_idx:]
+        prior_convo = convo_msgs[:last_user_idx]
+    else:
+        current_msg = convo_msgs[-1:] if convo_msgs else []
+        prior_convo = convo_msgs[:-1] if convo_msgs else []
     if len(prior_convo) >= PROTECT_RECENT:
         old_msgs = prior_convo[:-(PROTECT_RECENT - 1)]
         recent_msgs = prior_convo[-(PROTECT_RECENT - 1):] + current_msg
@@ -305,6 +324,21 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
         convo_msgs[-1] = _truncate_message_to_token_budget(convo_msgs[-1], available_for_current)
 
     result = _sanitize_tool_messages(essential_system + protected_msgs + convo_msgs)
+
+    # Last-resort guard: some backends reject a payload with no role=user
+    # message at all (e.g. "No user query found in messages") rather than just
+    # answering — that's an unrecoverable 400 with no retry path, unlike a
+    # context-length overflow (which llm_core.py's context-overflow recovery
+    # can correct and retry). If trimming somehow still produced a userless
+    # result, sending the untrimmed messages and risking overflow is strictly
+    # safer than guaranteeing this different, unrecoverable rejection.
+    if not any(m.get("role") == "user" for m in result):
+        logger.error(
+            "trim_for_context produced no role=user message — returning untrimmed "
+            "messages instead of risking a backend 'no user message' rejection"
+        )
+        return messages
+
     logger.info(f"Trimmed to {estimate_tokens(result)} tokens ({len(result)} messages)")
     return result
 
