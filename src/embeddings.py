@@ -13,6 +13,7 @@ Set EMBEDDING_URL in .env, e.g.:
 """
 
 import os
+import sys
 
 from src.constants import FASTEMBED_CACHE_DIR, EMBEDDING_ENDPOINT_FILE
 
@@ -129,12 +130,64 @@ class EmbeddingClient:
         return [emb["embedding"] for emb in embeddings]
 
 
+def _import_fastembed_text_embedding():
+    """Import fastembed.TextEmbedding, retrying with user-site packages
+    stripped from sys.path if the plain import fails.
+
+    A local model-serving stack installed via `pip install --user` (e.g.
+    Cookbook's vLLM/GPU install) can land a GPU-flavored onnxruntime in user
+    site-packages that needs CUDA runtime libs (libcudart.so.*) this
+    container may not have wired up. Because the app runs as a user whose
+    HOME doubles as that install target, Python's default sys.path puts the
+    broken GPU onnxruntime ahead of the working system-wide CPU one
+    fastembed actually needs — so the import fails even though a perfectly
+    good onnxruntime is installed system-wide. Retrying with user-site
+    stripped only affects module resolution for THIS import in THIS
+    process; any subprocess (e.g. Cookbook launching vllm itself) gets its
+    own fresh sys.path and is unaffected.
+    """
+    try:
+        from fastembed import TextEmbedding
+        return TextEmbedding
+    except ImportError as first_err:
+        import site
+        try:
+            user_site = site.getusersitepackages()
+        except Exception:
+            raise first_err
+
+        stripped_path = [
+            p for p in sys.path
+            if p != user_site and not p.startswith(user_site + os.sep)
+        ]
+        if len(stripped_path) == len(sys.path):
+            raise first_err  # nothing to strip — the failure is unrelated
+
+        # Drop any partially-initialized entries the failed import left behind
+        # before retrying, so the retry re-resolves from scratch.
+        for name in list(sys.modules):
+            if name == "fastembed" or name.startswith("fastembed.") \
+                    or name == "onnxruntime" or name.startswith("onnxruntime."):
+                sys.modules.pop(name, None)
+
+        original_path = sys.path
+        sys.path = stripped_path
+        try:
+            from fastembed import TextEmbedding
+            logger.info("fastembed imported with user-site packages excluded (see _import_fastembed_text_embedding)")
+            return TextEmbedding
+        except ImportError:
+            raise first_err
+        finally:
+            sys.path = original_path
+
+
 class FastEmbedClient:
     """Local embedding client using fastembed (ONNX). No external service needed."""
 
     def __init__(self, model: Optional[str] = None):
         try:
-            from fastembed import TextEmbedding
+            TextEmbedding = _import_fastembed_text_embedding()
         except ImportError as e:
             raise RuntimeError(
                 "Local fastembed is not installed. Either install it "
