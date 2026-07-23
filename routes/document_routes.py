@@ -106,6 +106,21 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             # was never set), detect it from the content rather than storing
             # NULL — which made the editor fall back to plain text. Defaults
             # to markdown for prose.
+            # Guard: reject raw binary (e.g. DOCX/XLSX/ZIP bytes sent directly).
+            # Binary stored as text gets UTF-8 mangled and is unreadable/unsearchable.
+            # The Office attachment path (src/office_doc.py) extracts text first and
+            # never hits this branch with binary; this catches direct API misuse or
+            # future UI paths that might forward raw file bytes.
+            _raw = req.content or ""
+            if _raw[:4] in ("PK\x03\x04", "%PDF") or (
+                _raw[:2] in ("\xff\xfe", "\xfe\xff")  # UTF-16 BOM
+            ):
+                raise HTTPException(
+                    400,
+                    "Document content appears to be a raw binary file. "
+                    "Upload Office/PDF files via the chat attachment button so text "
+                    "is extracted before saving to the library.",
+                )
             language = req.language
             if not language:
                 from src.agent_tools.document_tools import _looks_like_email_document, _sniff_doc_language
@@ -147,6 +162,8 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 fire_event("document_created", doc.owner)
             except Exception:
                 logger.debug("document_created event dispatch failed", exc_info=True)
+            from src.document_rag import index_document_for_rag
+            index_document_for_rag(doc.id, doc.title, doc.current_content, doc.owner)
             return _doc_to_dict(doc)
         except HTTPException:
             raise
@@ -255,6 +272,8 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 doc.owner = user
                 db.commit()
                 db.refresh(doc)
+            from src.document_rag import index_document_for_rag
+            index_document_for_rag(doc.id, doc.title, doc.current_content, doc.owner)
             return _doc_to_dict(doc)
         finally:
             db.close()
@@ -612,6 +631,8 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             doc.current_content = req.content
             db.commit()
             db.refresh(doc)
+            from src.document_rag import index_document_for_rag
+            index_document_for_rag(doc.id, doc.title, doc.current_content, doc.owner)
             return _doc_to_dict(doc)
         except HTTPException:
             raise
@@ -679,6 +700,8 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
             except Exception:
                 pass
             db.commit()
+            from src.document_rag import remove_document_from_rag
+            remove_document_from_rag(doc_id)
             return {"status": "deleted", "id": doc_id}
         except HTTPException:
             raise

@@ -249,6 +249,8 @@ def create_plain_pdf_document(
         db.add(ver)
         db.commit()
         set_active_document(doc_id)
+        from src.document_rag import index_document_for_rag
+        index_document_for_rag(doc_id, title, content, doc.owner)
         return doc_id
     except Exception as e:
         db.rollback()
@@ -432,6 +434,8 @@ def create_form_markdown_document(
         db.add(ver)
         db.commit()
         set_active_document(doc_id)
+        from src.document_rag import index_document_for_rag
+        index_document_for_rag(doc_id, title, content, doc.owner)
         return doc_id
     except Exception as e:
         db.rollback()
