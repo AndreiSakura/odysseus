@@ -297,6 +297,12 @@ class CreateDocumentTool:
                 "language": language,
                 "content": content,
                 "version": 1,
+                "note": (
+                    f"To give the user a downloadable PDF of this document, tell them to use "
+                    f"the Export menu in the editor, or share this link: "
+                    f"/api/document/{doc_id}/export-pdf (renders the content to a real PDF "
+                    f"server-side — do not write a Python/reportlab script for this)."
+                ),
             }
         except Exception as e:
             db.rollback()

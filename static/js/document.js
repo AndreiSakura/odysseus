@@ -8628,10 +8628,15 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
     // getting too cramped for dedicated icons.
     options.push({ label: 'Import from library', fn: () => openLibrary() });
     options.push({ label: 'Import from device', fn: () => _importFromDevice(), _divider: true });
-    if (isForm) options.push({ label: 'Filled PDF (.pdf)', fn: _downloadFilledPdf });
+    // _downloadFilledPdf hits /api/document/{id}/export-pdf server-side —
+    // fills the form for a form-backed doc, or (see src/document_pdf.py)
+    // renders the markdown to a real PDF from scratch otherwise. Real text
+    // layout, unlike "Print as PDF" below (html2canvas screenshot, no
+    // selectable text) — offer it for every document, not just forms.
+    options.push({ label: isForm ? 'Filled PDF (.pdf)' : 'PDF (.pdf)', fn: _downloadFilledPdf });
     options.push(
       { label: 'Export Markdown', fn: exportDocument },
-      { label: 'Print as PDF', fn: exportAsPdf },
+      { label: 'Print as PDF (screenshot)', fn: exportAsPdf },
       { label: 'Export as Word', fn: exportAsDocx },
     );
 

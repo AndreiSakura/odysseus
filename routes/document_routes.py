@@ -1420,6 +1420,11 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         Reads field values and signature selections from the markdown — there
         is no separate confirmation step. Signature fields contain their
         chosen signature ID encoded as `signature:<id>` in the value.
+
+        Documents with no linked PDF form (i.e. ordinary text/markdown docs)
+        fall back to rendering the markdown content to a fresh PDF from
+        scratch, so this one route works as a general-purpose "export as PDF"
+        for any Document, not just filled form templates.
         """
         import base64
         import os
@@ -1450,7 +1455,20 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
 
             upload_id = find_source_upload_id(doc.current_content or "")
             if not upload_id:
-                raise HTTPException(400, "Document is not linked to a source PDF")
+                from src.document_pdf import render_markdown_to_pdf
+
+                try:
+                    generic_path = render_markdown_to_pdf(doc.current_content or "", title=doc.title or "")
+                except RuntimeError as e:
+                    raise HTTPException(500, str(e))
+                _to_unlink.append(generic_path)
+                download_name = _slug(doc.title or "document") + ".pdf"
+                return FileResponse(
+                    generic_path,
+                    media_type="application/pdf",
+                    filename=download_name,
+                    background=BackgroundTask(_cleanup_temps),
+                )
 
             pdf_path = _locate_current_user_upload(request, upload_id, user)
             if not pdf_path:

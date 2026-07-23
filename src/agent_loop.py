@@ -2597,12 +2597,19 @@ async def stream_agent_loop(
     # tool, so we don't nudge on harmless transitional text like "let me
     # know what you think".
     _INTENT_RE = re.compile(
-        r"(?:^|\n|[.!?]\s+)\s*(?:let me|i'?ll|i will|i need to|we need to|need to|"
+        # Up to 2 leading filler words (e.g. "Now", "OK so", "Good,") before the
+        # actual intent phrase — "Now let me create..." was slipping past a
+        # stricter anchor that only allowed "let me..." right at a sentence
+        # boundary, which is exactly how models phrase this stall in practice.
+        r"(?:^|\n|[.!?]\s+)(?:[A-Za-z]{2,12}[,]?\s+){0,2}"
+        r"(?:let me|i'?ll|i will|i need to|we need to|need to|"
         r"i should|we should|i must|we must|going to|let's)\s+"
         r"(?:tail|check|investigate|look at|see|tail|read|fetch|inspect|"
         r"verify|diagnose|examine|debug|capture|grab|pull|view|run|call|"
         r"trigger|launch|start|kick off|stop|kill|restart|adopt|serve|"
-        r"register|adopt|list|search|find|query|hit|ping|test|use|perform|do)"
+        r"register|adopt|list|search|find|query|hit|ping|test|use|perform|do|"
+        r"create|generate|build|make|write|install|produce|save|export|"
+        r"compile|assemble|draft|convert)"
         r"\b[^.\n]{0,140}",
         re.IGNORECASE,
     )
