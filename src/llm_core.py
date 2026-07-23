@@ -10,7 +10,7 @@ import re
 import os
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
-from src.model_context import get_context_length, DEFAULT_CONTEXT
+from src.model_context import get_context_length, DEFAULT_CONTEXT, record_confirmed_context_length
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -878,6 +878,33 @@ def _format_chatgpt_subscription_error(status_code: int, text: str) -> str:
     if status_code == 429:
         return "ChatGPT Subscription quota or rate limit was reached. Retry after the upstream limit resets."
     return _format_upstream_error(status_code, text, "https://chatgpt.com/backend-api/codex")
+
+
+_CONTEXT_OVERFLOW_RE = re.compile(r"maximum context length is (\d+) tokens?", re.IGNORECASE)
+
+
+def _detect_context_overflow(status_code: int, raw_text: str) -> Optional[int]:
+    """Return the backend-confirmed context ceiling if this 400 is a
+    context-length-exceeded error (vLLM / llama.cpp / text-generation-webui
+    style: "This model's maximum context length is N tokens..."), else None.
+
+    The trimming upstream of this call (context_compactor.trim_for_context)
+    already sizes messages against a *discovered* context window, but that
+    discovery can be wrong for a local endpoint — e.g. a family-level
+    KNOWN_CONTEXT_WINDOWS guess (see model_context.py) can overshoot the
+    smaller --max-model-len a specific deployment was actually started with.
+    Parsing the backend's own rejection gives ground truth to correct that.
+    """
+    if status_code != 400 or not raw_text:
+        return None
+    m = _CONTEXT_OVERFLOW_RE.search(raw_text)
+    if not m:
+        return None
+    try:
+        ceiling = int(m.group(1))
+    except ValueError:
+        return None
+    return ceiling if ceiling > 0 else None
 
 
 def _format_upstream_error(status: int, body: bytes | str, url: str) -> str:
@@ -1797,6 +1824,8 @@ async def llm_call_async(
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
+            if tools:
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
         if provider == "mistral" and _supports_thinking(model):
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
         _apply_local_cache_affinity(payload, url, session_id)
@@ -1806,6 +1835,7 @@ async def llm_call_async(
 
     call_timeout = _call_timeout(timeout)
     attempt = 0
+    context_retried = False
     while attempt < max_retries:
         attempt += 1
         start = time.time()
@@ -1820,6 +1850,28 @@ async def llm_call_async(
                     f"LLM async call to {target_url} failed in {duration:.2f}s "
                     f"(attempt {attempt}): HTTP {r.status_code} {friendly}"
                 )
+                # A confirmed "context length exceeded" 400 is recoverable: the
+                # backend just told us the real ceiling, so correct the cache and
+                # re-trim once instead of failing the request outright. Only the
+                # generic OpenAI-compatible payload shape below uses a plain
+                # "messages" key the trimmer can rewrite in place; anthropic/
+                # ollama/chatgpt-subscription build their own payload shapes.
+                overflow_ceiling = (
+                    None if context_retried or provider in ("anthropic", "ollama", "chatgpt-subscription")
+                    else _detect_context_overflow(r.status_code, r.text)
+                )
+                if overflow_ceiling:
+                    record_confirmed_context_length(target_url, model, overflow_ceiling)
+                    from src.context_compactor import trim_for_context
+                    reserve = max(512, int(max_tokens or 0))
+                    messages_copy = trim_for_context(messages_copy, overflow_ceiling, reserve_tokens=reserve)
+                    payload["messages"] = messages_copy
+                    context_retried = True
+                    logger.warning(
+                        f"Context overflow on {target_url} ({model}): backend confirmed max "
+                        f"{overflow_ceiling} tokens — re-trimmed and retrying once"
+                    )
+                    continue
                 if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
                     await asyncio.sleep(LLMConfig.RETRY_DELAY)
                     continue
@@ -1926,8 +1978,12 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
         # For Ollama's OpenAI-compat /v1 endpoint with thinking models (qwen3,
         # gemma4, etc.), suppress thinking so tool calls aren't swallowed inside
         # <think> blocks. Ollama /v1 accepts "think": false as a top-level param.
+        # vLLM also matches _is_ollama_openai_compat_url (localhost+/v1) and
+        # accepts both "think": false and "chat_template_kwargs" for Qwen3.
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
+            if tools:
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
         _apply_local_cache_affinity(payload, url, session_id)
         h = _provider_headers(provider, headers)
         if provider == "copilot":
@@ -2222,6 +2278,21 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             _clear_host_dead(target_url)
             if r.status_code != 200:
                 raw = (await r.aread()).decode(errors="replace")
+                # Correct the cached context window from the backend's own
+                # rejection so the NEXT turn's pre-flight trim (build_chat_context
+                # -> trim_for_context, computed before this generator is even
+                # entered) uses the real ceiling instead of repeating this
+                # failure. Restructuring this generator to retry in place would
+                # need resetting a lot of per-stream state (_tc_acc, harmony
+                # router, think-tag tracking, ...); self-healing for the next
+                # request is a much lower-risk fix for the same root cause.
+                overflow_ceiling = _detect_context_overflow(r.status_code, raw)
+                if overflow_ceiling:
+                    record_confirmed_context_length(target_url, model, overflow_ceiling)
+                    logger.warning(
+                        f"Context overflow on {target_url} ({model}): backend confirmed max "
+                        f"{overflow_ceiling} tokens — corrected for subsequent requests"
+                    )
                 friendly = _format_upstream_error(r.status_code, raw, target_url)
                 yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
                 return

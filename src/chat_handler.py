@@ -248,12 +248,25 @@ class ChatHandler:
                             _m["vision"] = vl_desc
                             _m["vision_model"] = vl_model
 
+        context_length = 0
+        if effective_att_ids:
+            # Only known windows (endpoint-reported or in the known-model table)
+            # count — an unproven DEFAULT_CONTEXT fallback must not be trusted to
+            # size the inline attachment budget (see model_context.py).
+            try:
+                from src.model_context import get_context_length_known
+                _ctx, _known = get_context_length_known(sess.endpoint_url or "", sess.model or "")
+                context_length = _ctx if _known else 0
+            except Exception:
+                context_length = 0
+
         user_content = build_user_content(
             enhanced_message, effective_att_ids, UPLOAD_DIR, self.upload_handler,
             session_id=getattr(sess, "id", None),
             auto_opened_docs=auto_opened_docs,
             owner=owner,
             resolved_uploads=files_by_id,
+            context_length=context_length,
         )
 
         # Strip image_url entries for text-only models (VL description is already in the text)

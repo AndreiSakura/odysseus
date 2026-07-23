@@ -237,17 +237,43 @@ KNOWN_CONTEXT_WINDOWS = {
 # ---------------------------------------------------------------------------
 _context_cache: Dict[Tuple[str, str], Tuple[int, bool]] = {}
 
+# Ceilings confirmed by the backend's OWN context-length-exceeded error (ground
+# truth from an actual rejected request). Takes priority over both the live
+# probe and the KNOWN_CONTEXT_WINDOWS substring table: a family-level guess
+# (e.g. "qwen3" -> 131072) can overshoot the smaller --max-model-len a specific
+# local deployment was actually started with, and is_local_endpoint's cache
+# bypass below means that wrong guess would otherwise be re-derived on every
+# single call. Once the backend has rejected a request for being too long, we
+# trust its number unconditionally for the rest of the process lifetime.
+_confirmed_ceiling: Dict[Tuple[str, str], int] = {}
+
+
+def record_confirmed_context_length(endpoint_url: str, model: str, confirmed_tokens: int) -> None:
+    """Record a context ceiling confirmed by a real "context length exceeded" 400.
+
+    Called from src.llm_core when a request is rejected with the backend's own
+    reported maximum, so future calls for this (endpoint, model) stop trusting
+    a wrong known-table guess or an unreported/failed live probe.
+    """
+    if confirmed_tokens and confirmed_tokens > 0:
+        _confirmed_ceiling[(endpoint_url, model)] = confirmed_tokens
+        logger.info(f"Recorded backend-confirmed context ceiling for {model}: {confirmed_tokens}")
+
 
 def _get_context_length_cached(endpoint_url: str, model: str) -> Tuple[int, bool]:
     """Return (context_length, known). ``known`` is False only when the value is a
     bare DEFAULT_CONTEXT fallback (no endpoint report and not in the known table)."""
+    cache_key = (endpoint_url, model)
+    confirmed = _confirmed_ceiling.get(cache_key)
+    if confirmed:
+        return confirmed, True
+
     configured_kind = _configured_endpoint_kind(endpoint_url)
     is_local = is_local_endpoint(endpoint_url)
     # Key on (endpoint_url, model): the same model id can be served by two
     # different remote endpoints with different real context windows (e.g. a
     # capped proxy vs. the full provider), so caching by model id alone would
     # serve one endpoint's window for the other (issue #2603).
-    cache_key = (endpoint_url, model)
     if not is_local and cache_key in _context_cache:
         return _context_cache[cache_key]
 

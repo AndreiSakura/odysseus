@@ -164,10 +164,37 @@ def _truncate_inline(text: str, limit: int = 15000) -> tuple[str, str]:
     return text, ""
 
 
+def _dynamic_inline_attachment_budget(context_length: int) -> int:
+    """Shrink the shared inline-attachment budget for small-context models.
+
+    A fixed 24,000-char budget is fine for a 32K+ window but can still eat
+    most of a genuinely small local model's context on its own, leaving too
+    little room for the system prompt and history — which is exactly the
+    failure mode where the model's own context window rejects the request
+    even though this module thought it left headroom. Never GROWS past the
+    existing default, though: large-window headroom is left to the real
+    token-based trim (context_compactor.trim_for_context), which sizes the
+    whole turn against the actual window rather than guessing a per-attachment
+    share of it.
+
+    ``context_length`` must already be a *known* window (endpoint-reported or
+    in the known-model table) — pass 0 when unproven so this stays at the
+    existing conservative default instead of scaling off a guess.
+    """
+    if not context_length or context_length <= 0:
+        return MAX_INLINE_ATTACHMENT_CHARS
+    # Budget attachments to ~25% of the window in tokens, converted to the
+    # char-based cap this module works in (chars ~= tokens / 0.3, matching
+    # model_context.estimate_tokens' heuristic).
+    scaled_chars = int((context_length * 0.25) / 0.3)
+    return max(4000, min(scaled_chars, MAX_INLINE_ATTACHMENT_CHARS))
+
+
 def _fit_inline_attachment_text(
     text: str,
     remaining: int,
     display_name: str,
+    budget: int = MAX_INLINE_ATTACHMENT_CHARS,
 ) -> tuple[str, int]:
     """Fit extracted attachment text into the shared inline attachment budget.
 
@@ -184,7 +211,7 @@ def _fit_inline_attachment_text(
     if remaining < MIN_INLINE_ATTACHMENT_SLICE:
         return (
             f"\n\n[Attachment omitted from inline context: {name}. "
-            f"The {MAX_INLINE_ATTACHMENT_CHARS:,}-character shared inline "
+            f"The {budget:,}-character shared inline "
             "attachment budget was already used by earlier attachments. Ask "
             "to inspect this file specifically if more detail is needed.]",
             0,
@@ -192,7 +219,7 @@ def _fit_inline_attachment_text(
     marker = (
         f"\n\n[Attachment content truncated: {name}. "
         f"Only {remaining:,} characters of this attachment fit within "
-        f"the {MAX_INLINE_ATTACHMENT_CHARS:,}-character shared inline "
+        f"the {budget:,}-character shared inline "
         "attachment budget. Ask to inspect this file specifically if more "
         "detail is needed.]"
     )
@@ -401,6 +428,7 @@ def build_user_content(
     auto_opened_docs: list[Dict[str, Any]] | None = None,
     owner: str | None = None,
     resolved_uploads: dict[str, Dict[str, Any]] | None = None,
+    context_length: int = 0,
 ) -> str | List[Dict[str, Any]]:
     """Build user content with attachments (text, images, audio, documents).
 
@@ -409,9 +437,13 @@ def build_user_content(
     editor. When `auto_opened_docs` is supplied, an entry is appended for each
     such doc so the chat route can emit a `doc_update` SSE event and the
     frontend can switch to the new doc immediately.
+
+    ``context_length``, when known, scales the shared inline-attachment budget
+    down for small-context models (see `_dynamic_inline_attachment_budget`).
     """
     content = [{"type": "text", "text": text}]
-    inline_attachment_remaining = MAX_INLINE_ATTACHMENT_CHARS
+    inline_budget = _dynamic_inline_attachment_budget(context_length)
+    inline_attachment_remaining = inline_budget
 
     for fid in attachment_ids or []:
         upload_info = (resolved_uploads or {}).get(fid)
@@ -582,6 +614,7 @@ def build_user_content(
                 extracted_text,
                 inline_attachment_remaining,
                 display_name,
+                budget=inline_budget,
             )
             if content and content[0]["type"] == "text":
                 content[0]["text"] += extracted_text
