@@ -68,6 +68,7 @@ The block executes automatically and you see the output."""
 _AGENT_RULES = """\
 ## Rules
 - Only use tools when needed. Don't search for things you already know.
+- **Named-topic questions** (user asks about a project, system, process, team, acronym, or person you don't have clear context on): call `manage_documents` with `action=list` and a relevant `search` query FIRST — the library may contain authoritative uploaded documents. Answer from library results if found. Only use `web_search` if no relevant local documents exist OR the user explicitly wants web/external/latest info.
 - For web lookup/search/latest/current requests, use `web_search` or `web_fetch`. Do NOT use `bash`, `python`, `curl`, `requests`, or scraping code for web lookup unless web tools are disabled or already failed.
 - These exact tags execute automatically. For showing code examples, use ```shell, ```sh, ```py, etc. instead.
 - Multiple tool blocks per response OK. 60s timeout per tool, 10K char output limit.
@@ -115,6 +116,7 @@ _API_AGENT_RULES = """\
 - Prefer native tool/function calling when tools are needed.
 - Only call tools when they materially help answer the request.
 - You MUST use tools to take action — do not describe what you would do. Act, don't narrate.
+- **Named-topic questions** (user asks about a project, system, process, team, acronym, or person you don't have clear context on): call `manage_documents` with `action=list` and a relevant `search` query FIRST — the library may contain authoritative uploaded documents. Answer from library results if found. Only use `web_search` if no relevant local documents exist OR the user explicitly wants web/external/latest info.
 - For web lookup/search/latest/current requests, call `web_search` or `web_fetch`. Do NOT use shell, Python, curl, requests, or scraping code for web lookup unless web tools are unavailable or already failed.
 - Keep answers concise unless the user asks for depth.
 - For long code or content, use document tools instead of pasting large blocks into chat.
@@ -173,17 +175,19 @@ _API_AGENT_RULES = """\
   - Listing sessions: "1. [Big Chat](#session-abc123) — 2h ago, 2. [Code Review](#session-def456) — 5h ago\""""
 
 _AGENT_PREAMBLE = """\
-You are an AI assistant with tool access. Only the tools listed below are available for this turn.
+You are Odysseus, an AI assistant running on the user's own server with REAL tool access — a working shell, local files, and locally installed software (ffmpeg, faster-whisper, pyannote for audio/video; and more). You are NOT a sandboxed chat-only model with no environment. Never tell the user you "don't have access to" some capability (audio/video transcription, running code, reading a file, etc.) without first checking whether one of the tools below already covers it — most requests that sound like a text-model limitation are actually just a tool call away. Only the tools listed below are available for this turn.
 To use a tool, write a fenced code block with the tool name as the language tag. The block executes automatically and you see the output."""
 
 _AGENT_RULES = """\
 ## Base rules
 - Only use tools when needed. For casual messages like "test", "yo", "thanks", answer normally.
 - If a needed tool/domain is missing from this turn, say what is missing briefly instead of pretending.
+- **Named-topic questions** (user asks about a project, system, process, team, acronym, or person you don't have clear context on): call `manage_documents` with `action=list` and a relevant `search` query FIRST — the library may contain authoritative uploaded documents. Answer from library results if found. Only use `web_search` if no relevant local documents exist OR the user explicitly wants web/external/latest info.
 - After a tool succeeds, do not second-guess it; reply with one short confirmation unless more work remains.
 - After a tool fails, retry with a concrete fix or state what is blocking you.
 - Finish only when the user's concrete request is actually done, or clearly state that you are blocked.
 - User identity facts/preferences ("my name is X", "call me X", "I live in X") use `manage_memory`, not contacts.
+- You are NOT a plain chat model with no environment — you are running on a real server with a working `bash` tool (ffmpeg, faster-whisper, pyannote, etc. are installed locally). For "transcribe this audio/video" requests, do NOT say you lack audio/video processing tools or ask the user to use an external service — run ```bash python3 /app/scripts/transcribe_media.py --input <path> --output <path>.md``` on the file's real path (see the uploaded-files list above), as a `#!bg` background job if the file is more than a couple minutes long.
 """
 
 _API_AGENT_RULES = """\
@@ -193,6 +197,8 @@ _API_AGENT_RULES = """\
 - You MUST use tools to take action; do not claim you did something without a tool result.
 - If a needed tool/domain is missing from this turn, say what is missing briefly instead of pretending.
 - Keep answers concise unless the user asks for depth.
+- You are NOT a plain chat model with no environment — you are running on a real server with a working `bash` tool (ffmpeg, faster-whisper, pyannote, etc. are installed locally). For "transcribe this audio/video" requests, do NOT say you lack audio/video processing tools or ask the user to use an external service (Otter.ai, YouTube captions, etc.) — call `bash` to run `python3 /app/scripts/transcribe_media.py --input <path> --output <path>.md` on the file's real path (see the uploaded-files list above for that path), as a `#!bg` background job if the file is more than a couple minutes long. Only fall back to asking the user for a transcript if that script itself fails.
+- **Named-topic questions** (user asks about a project, system, process, team, acronym, or person you don't have clear context on): call `manage_documents` with `action=list` and a relevant `search` query FIRST — the library may contain authoritative uploaded documents. Answer from library results if found. Only use `web_search` if no relevant local documents exist OR the user explicitly wants web/external/latest info.
 - After a tool succeeds, do not second-guess it; reply with one short confirmation unless more work remains.
 - After a tool fails, retry with a concrete fix or state what is blocking you.
 - Finish only when the user's concrete request is actually done, or clearly state that you are blocked.
@@ -312,6 +318,12 @@ For LONG-running commands (package installs, pip/npm, ffmpeg, model downloads, t
 #!bg
 pip install openai-whisper
 ```
+To transcribe an audio/video file (mp4, mp3, wav, m4a, etc.) — including "transcribe this", "get the text out of this recording", "who said what" / speaker-labeled requests — do NOT write ffmpeg/whisper code from scratch. Run the existing pipeline script instead, as a background job for anything more than a minute or two long:
+```bash
+#!bg
+python3 /app/scripts/transcribe_media.py --input <absolute path to the file> --output <path>.md
+```
+It extracts audio, transcribes with faster-whisper, and speaker-diarizes with pyannote into a `**Speaker 1**` / `**Speaker 2**` labeled Markdown transcript. Pass `--no-diarize` to skip speaker labels (faster, plain transcript only). Once it finishes, read the output file and save it to the user's document library with `create_document`.
 SANDBOX LIMITS: stdin/stdout are pipes, so there is NO interactive terminal — `input()`, `curses`, `termios`, `pygame`, and `tkinter` will all fail. Don't try to RUN interactive terminal games or GUI apps here — verify syntax (`python -c "import py_compile; py_compile.compile('x.py')"`) and tell the user to run it themselves in their own terminal. For anything the USER should play/use interactively (games, UIs, demos), prefer a single self-contained HTML file with `<canvas>` + inline JS — save it via `create_document` with language="html" and tell the user to hit the Run / Preview button (▶) in the document editor toolbar; it renders inline in a sandboxed iframe so the game is playable right there. Works from any machine that can reach the Odysseus UI — no need to copy files out.
 NEVER pipe multi-line Python through `python -c "..."` — shell quoting eats real newlines and `\\n` arrives as literal backslash-n, which Python parses as a line-continuation error on line 1. To run multi-line code, either use the dedicated `python` tool block above, or save to a file first with a quoted HEREDOC (`cat > /tmp/x.py << 'EOF' ... EOF`) and then `python /tmp/x.py`.""",
 
@@ -420,7 +432,7 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "manage_mcp": "- ```manage_mcp``` — Manage MCP (Model Context Protocol) tool servers — external tools that extend your capabilities. Args (JSON): {\"action\": \"list|add|delete|reconnect|list_tools\", ...}",
     "manage_webhooks": "- ```manage_webhooks``` — Configure outgoing webhooks (HTTP notifications on events like chat completion). Args (JSON): {\"action\": \"list|add|delete|enable|disable\", ...}",
     "manage_tokens": "- ```manage_tokens``` — Generate or revoke API access tokens for external integrations. Args (JSON): {\"action\": \"list|create|delete\", ...}",
-    "manage_documents": "- ```manage_documents``` — List, read/open, delete, or tidy documents in the editor panel. Args (JSON): {\"action\": \"list|read|delete|tidy\", ...}. `list` returns rows like `[Title](#document-<id>) — lang, size, updated 5m ago` sorted MOST-RECENT FIRST; the user clicks the anchor to open. `read` (aliases: view/open/get) takes `document_id` and returns the content. When the user asks \"open/show/read my notes\" or \"what documents do I have\", use this — do NOT shell out, do NOT curl.",
+    "manage_documents": "- ```manage_documents``` — List, search, read/open, delete, or tidy documents in the editor panel. Args (JSON): {\"action\": \"list|read|delete|tidy\", ...}. `list` with a `search` field searches both title AND document content (e.g. `{\"action\":\"list\",\"search\":\"Legal Hold process\"}`) — use this to find documents about a topic. Returns rows like `[Title](#document-<id>) — lang, size, updated 5m ago` sorted MOST-RECENT FIRST. `read` (aliases: view/open/get) takes `document_id` and returns the content. **PROACTIVE RULE: whenever the user asks about a named topic, project, system, process, or person that you don't have clear context on — call action=list with a relevant search query FIRST, before answering or saying you don't know. The library may contain authoritative documents (specs, transcripts, notes, guides) the user uploaded. Example: user asks about \"EPN\" or \"SNOW\" → call manage_documents with search=\"EPN SNOW\" before responding.** When the user asks \"search the library for X\" or \"find documents about Y\", call this with action=list and search=query. When the user asks \"open/show/read my notes\" or \"what documents do I have\", use this — do NOT shell out, do NOT curl.",
     "manage_research": "- ```manage_research``` — List, read/open, or delete saved DEEP RESEARCH results from the Library. Args (JSON): {\"action\": \"list|read|delete\", \"id\": \"<id>\", \"search\": \"...\"}. `list` returns rows like `[query](#research-<id>) — N sources` MOST-RECENT FIRST; the user clicks to open. `read` (aliases: open/view/get) takes `id` and returns the report text + sources. Use when the user says \"open/read/find/delete my research\" or \"that report\". This IS how you read a finished report: when the user refers to a just-completed deep-research job (\"check it out\", \"read that report\", \"summarize the research\") WITHOUT giving an id, call `manage_research` with `action:list` to get the most-recent id, then `action:read` with that id, and answer from the returned text. Do NOT `web_fetch`/`app_api` the `/api/research/report/{id}` URL — that endpoint renders HTML for the browser, not clean text — and do NOT start a fresh `web_search`/`trigger_research` just to read an existing report. To START new research, use trigger_research instead.",
     "manage_settings": "- ```manage_settings``` — View/change the REAL app settings (same ones the Settings panel writes) AND turn tools on/off. Change a setting: `{\"action\":\"set\",\"key\":\"...\",\"value\":\"...\"}` — keys accept friendly aliases, e.g. voice→tts_voice, \"search engine\"→search_provider, \"default model\"→default_model, \"teacher model\"→teacher_model, \"task/background model\"→task_model, \"image quality\"→image_quality, \"reminder channel\"→reminder_channel (browser|email|ntfy), \"agent timeout\"/\"max tool calls\"/\"token budget\". Read: `{\"action\":\"get\",\"key\":\"...\"}`; see all: `{\"action\":\"list\"}`; reset one: `{\"action\":\"reset\",\"key\":\"...\"}`. Use this when the user asks to change ANY preference instead of making them open Settings. Secrets/API keys are read-only (tell them to set those in the panel). Tool toggles: `{\"action\":\"disable_tool|enable_tool\",\"tool\":\"shell\"}` (aliases: shell/search/browser/documents/memory/skills/images/tasks/notes/calendar/email), list disabled: `{\"action\":\"list_tools\"}`.",
     "manage_notes": """\
@@ -2416,7 +2428,16 @@ async def stream_agent_loop(
     ):
         _is_api_model = False
     else:
-        _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
+        _is_hosted = any(h in endpoint_url for h in _API_HOSTS)
+        # Keyword-matched models (qwen3, llama-3, etc.) are known to support
+        # native function calling and should receive tool schemas regardless of
+        # whether the endpoint is local. _model_supports_tools=False already
+        # handles the "unknown model" case — no need to block local endpoints
+        # separately, which would override the keyword match and break tool
+        # calling for known-good local models like Qwen3/vLLM.
+        # If a local model 400s on tool_choice, set supports_tools=False on
+        # the endpoint to override.
+        _is_api_model = _is_hosted or _model_supports_tools
     _compact_agent_prompt = _is_api_model or _is_ollama_native or _ollama_openai_compat
     messages, mcp_schemas = _build_system_prompt(
         messages, model, active_document, mcp_mgr, disabled_tools,
@@ -2457,6 +2478,12 @@ async def stream_agent_loop(
     prep_timings["prompt_build"] = time.time() - _t2
 
     _t3 = time.time()
+    # Reused before every round below (not just this prep pass) — a long
+    # tool-calling turn keeps appending tool results round after round, so
+    # the budget must be re-applied each time or the prompt silently grows
+    # past the model's real context window until the API itself 400s.
+    _soft_trim_budget = None
+    _soft_trim_reserve = None
     try:
         from src.context_compactor import trim_for_context
         from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX, DEFAULT_BUDGET, budget_is_explicit as _budget_is_explicit
@@ -2489,6 +2516,8 @@ async def stream_agent_loop(
                 budget_is_explicit,
                 hard_max=hard_max,
             )
+            _soft_trim_budget = effective_budget
+            _soft_trim_reserve = reserve_tokens
             trimmed_messages = trim_for_context(
                 messages,
                 effective_budget,
@@ -2568,7 +2597,7 @@ async def stream_agent_loop(
     # tool, so we don't nudge on harmless transitional text like "let me
     # know what you think".
     _INTENT_RE = re.compile(
-        r"(?:^|\n)\s*(?:let me|i'?ll|i will|i need to|we need to|need to|"
+        r"(?:^|\n|[.!?]\s+)\s*(?:let me|i'?ll|i will|i need to|we need to|need to|"
         r"i should|we should|i must|we must|going to|let's)\s+"
         r"(?:tail|check|investigate|look at|see|tail|read|fetch|inspect|"
         r"verify|diagnose|examine|debug|capture|grab|pull|view|run|call|"
@@ -2652,6 +2681,38 @@ async def stream_agent_loop(
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
         logger.info(f"[agent-debug] round={round_num} model={model} _is_api_model={_is_api_model} tools_sent={len(_tool_names_sent)} tool_names={_tool_names_sent[:15]} relevant_tools={sorted(_relevant_tools)[:15] if _relevant_tools else 'ALL'}")
+
+        # Re-trim before every round, not just round 1: tool results appended
+        # after each round (search hits, file reads, transcripts) keep growing
+        # the prompt, and the one-shot trim before this loop only ever saw the
+        # turn's starting size. Without this, a long tool-calling turn grows
+        # past the model's real context window until the API itself 400s
+        # (reproduced: 18202 -> 30547 estimated tokens over 12 rounds, hard
+        # limit 32768).
+        if _soft_trim_budget is not None:
+            try:
+                # Native tool schemas ride alongside `messages` in the request
+                # body (the `tools` param), so the endpoint counts them toward
+                # its context limit even though estimate_tokens() only ever
+                # sees `messages`. Left unreserved, a turn with many RAG-selected
+                # tools (or admin's full FUNCTION_TOOL_SCHEMAS) can push the real
+                # request past the model's window while our own accounting still
+                # reads comfortably under budget (reproduced: 26500 est. vs 32769
+                # actual with 26 schemas ~= 5900 tokens unaccounted for).
+                _schema_reserve = int(len(json.dumps(all_tool_schemas)) * 0.3) if all_tool_schemas else 0
+                _rt_before = estimate_tokens(messages)
+                _rt_trimmed = trim_for_context(
+                    messages, _soft_trim_budget, reserve_tokens=_soft_trim_reserve + _schema_reserve
+                )
+                _rt_after = estimate_tokens(_rt_trimmed)
+                if _rt_after < _rt_before:
+                    logger.info(
+                        "[agent] soft-trimmed context before round %s: %s -> %s tokens (budget=%s)",
+                        round_num, _rt_before, _rt_after, _soft_trim_budget,
+                    )
+                    messages = _rt_trimmed
+            except Exception as e:
+                logger.warning("[agent] Per-round context trim skipped: %s", e)
 
         # Primary target + any configured fallback models. stream_llm_with_fallback
         # only switches on a pre-content failure, so streamed output is never

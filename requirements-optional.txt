@@ -12,6 +12,18 @@
 # GPU-accelerated transcription — it's auto-detected, CPU is used otherwise.
 faster-whisper
 
+# Speaker diarization for scripts/transcribe_media.py (labels "Speaker 1",
+# "Speaker 2", ... in transcripts of video/audio files). NOT listed as a
+# plain requirement here on purpose: pyannote.audio needs torch>=2.8, which
+# is heavy and — like Real-ESRGAN's torch dependency — is meant to be
+# installed at runtime (e.g. via Cookbook, `pip install --user
+# pyannote.audio`) into the persisted /app/.local, not baked into the base
+# image. Also needs an HF_TOKEN / HUGGING_FACE_HUB_TOKEN env var from a
+# HuggingFace account that has accepted the gated licenses for
+# pyannote/speaker-diarization-3.1 and pyannote/segmentation-3.0. Without
+# it, scripts/transcribe_media.py still works — it just skips diarization
+# and produces a plain (unlabeled) transcript.
+
 # DuckDuckGo as a search provider option.
 # Install if you want DDG in the search-provider dropdown.
 # Alternatives: SearXNG, Brave, Tavily, Serper, Google PSE.

@@ -67,8 +67,8 @@ COLLECTION_NAME = "odysseus_tool_index"
 # Each tool gets a searchable description that helps retrieval.
 # These are richer than the system prompt one-liners — they're for embedding.
 BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
-    "bash": "Run shell commands on the server. Install packages, git operations, builds, system info, process management. Prefer a dedicated tool whenever one fits the job (file read/write/edit, search, listing); use bash only for what no dedicated tool covers. Do not use for web lookup/search; use web_search or web_fetch when web tools are available.",
-    "python": "Execute Python code for computation, data processing, math, scripting, and parsing. Not for writing code for the user. Prefer a dedicated tool for reading, writing, or searching files; use python only for what no dedicated tool covers. Do not use for web lookup/search; use web_search or web_fetch when web tools are available.",
+    "bash": "Run shell commands on the server. Install packages, git operations, builds, system info, process management, media processing (ffmpeg audio/video conversion, extracting audio from mp4/video files, running whisper/faster-whisper to transcribe audio or video into text). For 'transcribe this video/audio' requests, run `python3 /app/scripts/transcribe_media.py --input <path> [--no-diarize]` (note: bash's cwd is the data dir, not the app root, so use this absolute path) — it extracts audio, transcribes, and speaker-diarizes into a 'Speaker 1: ...' labeled transcript; don't reimplement this pipeline ad hoc. Wrap long files in a `#!bg` background job. Prefer a dedicated tool whenever one fits the job (file read/write/edit, search, listing); use bash only for what no dedicated tool covers. Do not use for web lookup/search; use web_search or web_fetch when web tools are available.",
+    "python": "Execute Python code for computation, data processing, math, scripting, parsing, and media processing (transcribing audio/video files with whisper/faster-whisper, converting media with ffmpeg-python or moviepy). For transcribing/diarizing a video or audio file, prefer running /app/scripts/transcribe_media.py via bash over writing this pipeline from scratch. Not for writing code for the user. Prefer a dedicated tool for reading, writing, or searching files; use python only for what no dedicated tool covers. Do not use for web lookup/search; use web_search or web_fetch when web tools are available.",
     "web_search": "Quick single web lookup for a fact, current event, latest/current information, or doc mid-task. Use this instead of bash/curl/python/requests for web searches. NOT for 'research X' / 'do research on X' requests — those are deep-research jobs (use trigger_research). web_search = one query; trigger_research = a full researched report in the sidebar.",
     "web_fetch": "Fetch and read the text content of a specific URL/website the user names (e.g. 'check example.com', 'open this link'). Use when you have a concrete URL; for open-ended lookups use web_search instead.",
     "read_file": "Read a file from disk and return its contents. View source code, config files, logs. Supports an optional line range (offset/limit) for large files.",
@@ -412,6 +412,17 @@ class ToolIndex:
                    "deep dive", "deep research", "find out about", "study up on",
                    "report on", "do research", "look up everything"}):
             {"trigger_research"},
+        # Media transcription / conversion intent — the only tools that can
+        # actually shell out to ffmpeg/whisper on a local file are bash/python,
+        # but their descriptions don't mention media so embedding retrieval
+        # alone doesn't reliably surface them (#5012). Force them into scope
+        # whenever the request smells like "get text out of an audio/video file".
+        frozenset({"transcribe", "transcription", "transcript from", "mp4", "mp3",
+                   "m4a", "wav file", "audio file", "video file", "whisper",
+                   "ffmpeg", "speech to text", "extract audio", "convert video",
+                   "convert audio", "diarize", "diarization", "speaker labels",
+                   "who said what", "label the speakers", "speaker names"}):
+            {"bash", "python", "read_file", "write_file"},
         # Settings-change intent — "change my…/set my…/use X for…/turn on…".
         frozenset({"change my", "set my", "use the voice", "change the voice",
                    "my voice", "tts voice", "search engine", "default model",

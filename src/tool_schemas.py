@@ -25,7 +25,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Run a shell command (full access). Prefer a dedicated tool whenever one fits the job (reading, writing, editing, searching, or listing files); use bash only for what no dedicated tool covers (installs, git, builds, running programs, system info). Do NOT create or edit files via bash redirects/heredocs/sed -- use the dedicated file tools.",
+            "description": "Run a shell command (full access). Prefer a dedicated tool whenever one fits the job (reading, writing, editing, searching, or listing files); use bash only for what no dedicated tool covers (installs, git, builds, running programs, system info). Do NOT create or edit files via bash redirects/heredocs/sed -- use the dedicated file tools. To transcribe an audio/video file (mp4/mp3/wav/m4a, speaker-labeled or not), run `python3 /app/scripts/transcribe_media.py --input <path> --output <path>.md` (as a `#!bg` background job if longer than ~1-2 minutes) rather than writing an ffmpeg/whisper pipeline from scratch.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -750,13 +750,13 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "manage_documents",
-            "description": "Manage documents: list all documents (with optional search/language filter), delete documents, or run tidy cleanup.",
+            "description": "Manage documents in the document library: list/search documents by title or content, read a document by ID, delete documents, or run tidy cleanup. To search by content use action=list with a search query.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "delete", "tidy"]},
-                    "document_id": {"type": "string", "description": "Document ID (for delete)"},
-                    "search": {"type": "string", "description": "Search query (for list)"},
+                    "action": {"type": "string", "enum": ["list", "read", "delete", "tidy"]},
+                    "document_id": {"type": "string", "description": "Document ID (for read/delete)"},
+                    "search": {"type": "string", "description": "Search query — searches both title and document content (for list)"},
                     "language": {"type": "string", "description": "Filter by language (for list)"},
                     "limit": {"type": "integer", "description": "Max results (for list, default 50)"}
                 },
