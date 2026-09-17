@@ -1824,8 +1824,6 @@ async def llm_call_async(
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
-            if tools:
-                payload["chat_template_kwargs"] = {"enable_thinking": False}
         if provider == "mistral" and _supports_thinking(model):
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
         _apply_local_cache_affinity(payload, url, session_id)
