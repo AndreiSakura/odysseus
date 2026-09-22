@@ -7,6 +7,7 @@ Summarizes older messages via the same LLM, preserving key context.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from src.model_context import get_context_length, estimate_tokens
@@ -67,7 +68,9 @@ What is the system/code/task state right now? What was the last thing discussed?
 - Important constraints, preferences, or decisions that must not be forgotten
 - Specific values: model names, ports, paths, credentials references, versions
 
-Keep the summary under 1000 tokens. Be dense — every token should carry information. Do not include pleasantries or meta-commentary."""
+Keep the summary under 1000 tokens. Be dense — every token should carry information. Do not include pleasantries or meta-commentary.
+
+If the input includes an EXISTING SUMMARY block, that is ground truth from earlier compactions — carry its User Goal and Key Context forward unchanged unless the new messages explicitly supersede them, and fold the new messages' outcomes into What Was Done / Current State / Pending Steps. Never narrow the User Goal to describe only the most recent slice of work; state the original, overall goal."""
 
 
 def _sanitize_tool_messages(msgs: List[Dict]) -> List[Dict]:
@@ -114,6 +117,22 @@ def _sanitize_tool_messages(msgs: List[Dict]) -> List[Dict]:
                     continue  # nothing left worth keeping
         out.append(m)
     return out
+
+
+def _is_summary_msg(m: Dict) -> bool:
+    return m.get("role") == "system" and "[Conversation summary" in (m.get("content") or "")
+
+
+def _extract_prior_compaction_count(summary_text: str) -> int:
+    """Read the "**Compactions so far:** N" counter back out of a prior summary.
+
+    Compactions are now merged into a single summary message (see maybe_compact)
+    rather than stacked, so a simple count of summary messages present would
+    always read 0 or 1. The running total instead lives inside the summary
+    text itself and is carried forward from there.
+    """
+    m = re.search(r"Compactions so far:\*\*\s*(\d+)", summary_text or "")
+    return int(m.group(1)) if m else 0
 
 
 def _message_text_token_estimate(text: str) -> int:
@@ -389,11 +408,18 @@ async def maybe_compact(
         for msg in older
     )
 
-    # Count prior compactions from existing summary messages
-    compaction_count = sum(
-        1 for m in system_msgs
-        if "[Conversation summary" in m.get("content", "")
-    )
+    # Prior compaction(s) leave a single "[Conversation summary" system
+    # message behind (see below — merged, not stacked). Pull it out of
+    # system_msgs so it can be folded into the new summary instead of piling
+    # up as yet another block: previously each compaction only ever saw the
+    # raw slice of messages being summarized, with no memory of what earlier
+    # summaries said, so the model re-derived "User Goal" from scratch every
+    # time and it drifted to whatever the most recent few turns were about,
+    # forgetting the original ask a few compactions back.
+    prior_summaries = [m for m in system_msgs if _is_summary_msg(m)]
+    other_system = [m for m in system_msgs if not _is_summary_msg(m)]
+    prev_summary_text = prior_summaries[-1].get("content", "") if prior_summaries else ""
+    compaction_count = _extract_prior_compaction_count(prev_summary_text)
 
     # Use utility model if configured, otherwise fall back to session model
     util_url, util_model, util_headers = resolve_endpoint("utility", owner=owner)
@@ -406,9 +432,16 @@ async def maybe_compact(
     ).replace(
         "{n}", str(compaction_count + 1)
     )
+    user_content = convo_text
+    if prev_summary_text:
+        user_content = (
+            "EXISTING SUMMARY (from earlier compactions — carries the original "
+            "goal and everything already learned; update it, don't discard it):\n"
+            f"{prev_summary_text}\n\n---\n\nNEW MESSAGES TO FOLD IN:\n{convo_text}"
+        )
     summary_messages = [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": convo_text},
+        {"role": "user", "content": user_content},
     ]
 
     try:
@@ -433,14 +466,19 @@ async def maybe_compact(
         "content": f"[Conversation summary — earlier messages were compacted]\n{summary}",
     }
 
-    compacted = system_msgs + [summary_msg] + recent
+    compacted = other_system + [summary_msg] + recent
 
-    # Update session history to match. Pass len(system_msgs) so the
-    # recent_history slice in _update_session_history uses the correct
-    # offset — session.history INCLUDES the system messages, but
-    # split_point is indexed against convo_msgs which does NOT. Without
-    # this, the slice drops the leading system message(s).
-    _update_session_history(session, split_point, summary, system_msg_count=len(system_msgs))
+    # Update session history to match. total_system_count (all leading system
+    # messages in `messages`, including the old summary) is what correctly
+    # offsets into session.history — its leading system block mirrors that
+    # same set. keep_system_count (excluding the old summary) is what the new
+    # history should actually retain, since the old summary is being replaced
+    # by the merged one, not kept alongside it.
+    _update_session_history(
+        session, split_point, summary,
+        total_system_count=len(system_msgs),
+        keep_system_count=len(other_system),
+    )
 
     new_used = estimate_tokens(compacted)
     logger.info(
@@ -452,26 +490,36 @@ async def maybe_compact(
 
 
 def _update_session_history(session, split_point: int, summary: str,
-                            system_msg_count: int = 0):
+                            total_system_count: int = 0,
+                            keep_system_count: int = None):
     """Update the in-memory session history after compaction.
 
     `split_point` is the index in `convo_msgs` (system-stripped). The
     in-memory `session.history` includes leading system messages, so the
-    actual recent-history slice starts at `system_msg_count + split_point`.
-    Prepending `session.history[:system_msg_count]` to the new history
-    preserves persona, preset, and RAG system messages that would
-    otherwise be dropped.
+    actual recent-history slice starts at `total_system_count + split_point`
+    — `total_system_count` must cover EVERY leading system message
+    (persona/preset/RAG plus any prior compaction summary), since that is
+    what session.history's own leading block mirrors.
+
+    `keep_system_count` (defaults to `total_system_count` when omitted) is
+    how many of those leading messages to actually retain in the new
+    history. It is smaller than `total_system_count` when a prior summary is
+    being replaced by the newly merged one rather than kept alongside it —
+    getting this wrong either duplicates the old summary or, if used for the
+    offset instead, misindexes into the middle of the old summary's content.
     """
     if not session or not hasattr(session, "history"):
         return
+    if keep_system_count is None:
+        keep_system_count = total_system_count
 
-    effective_split = system_msg_count + split_point
+    effective_split = total_system_count + split_point
     if effective_split >= len(session.history):
         return
 
     # Keep the recent messages, prepend summary AND the leading system
     # messages so the system prompt survives compaction.
-    system_prefix = list(session.history[:system_msg_count])
+    system_prefix = list(session.history[:keep_system_count])
     recent_history = session.history[effective_split:]
     summary_msg = ChatMessage(
         role="system",
