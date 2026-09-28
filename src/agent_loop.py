@@ -2588,6 +2588,15 @@ async def stream_agent_loop(
     # that *can't* call the tool from looping forever.
     _intent_nudge_count = 0
     _MAX_INTENT_NUDGES = 2
+    # Zero-success breaker: distinct wrong tool calls each round (never an
+    # exact repeat) don't trip _stuck_rounds above, so a model that's
+    # flailing — wrong tool, then a different wrong tool, then plain text —
+    # can ride out the whole round budget before anyone notices. Track
+    # consecutive rounds where every tool call in the round errored, and
+    # bail with a clear report once that streak gets too long.
+    _no_success_streak = 0
+    _no_success_tool_errors: list = []  # (tool_type, error) from the tripping streak, for the report
+    _MAX_NO_SUCCESS_STREAK = int(get_setting("agent_no_success_round_limit", 5) or 5)
 
     # "I said I would, then didn't" detector. The pattern that breaks debug
     # loops on weak models (deepseek-v4-flash mid-2026): the model writes
@@ -3161,9 +3170,25 @@ async def stream_agent_loop(
         # Distinct calls to one tool (a real batch) are legitimate work, so we
         # count identical call signatures, not raw per-tool-type totals.
         _runaway = _detect_runaway_call(_call_freq)
-        if _stuck_rounds >= 4 or _runaway:
-            reason = (f"calling {_runaway} with identical arguments over and over" if _runaway
-                      else "repeating the same tool calls without new progress")
+        # Zero-success streak = every call in this round errored, regardless
+        # of whether the calls were distinct. Catches a model flailing across
+        # DIFFERENT wrong tools round to round — never an identical repeat,
+        # so _stuck_rounds never fires — until it gives up. Any round with at
+        # least one real success resets the streak.
+        if _round_tool_outcomes and all(err for _, err in _round_tool_outcomes):
+            _no_success_streak += 1
+            _no_success_tool_errors.extend(_round_tool_outcomes)
+        else:
+            _no_success_streak = 0
+            _no_success_tool_errors = []
+        _no_success_tripped = _no_success_streak >= _MAX_NO_SUCCESS_STREAK
+        if _stuck_rounds >= 4 or _runaway or _no_success_tripped:
+            if _runaway:
+                reason = f"calling {_runaway} with identical arguments over and over"
+            elif _no_success_tripped:
+                reason = f"{_no_success_streak} consecutive rounds with no successful tool call"
+            else:
+                reason = "repeating the same tool calls without new progress"
             logger.warning(f"[agent] loop-breaker tripped on round {round_num} ({reason}); sig={_sig[:80]!r}")
             # The model has been executing tools, so its results are already
             # in context. Force ONE tool-free round to converge: write the
@@ -3174,17 +3199,33 @@ async def stream_agent_loop(
                     if disabled_tools and t in disabled_tools]
             _off_note = (f" ({', '.join(_off)} is currently disabled — say so if "
                          f"you needed it.)" if _off else "")
-            _force_answer = True
-            messages.append({
-                "role": "system",
-                "content": (
+            if _no_success_tripped:
+                # Give the model the actual failures so it can report them
+                # accurately instead of guessing — the last few distinct
+                # (tool, error) pairs from the failing streak.
+                _seen_errs = []
+                for _t, _e in _no_success_tool_errors[-8:]:
+                    _line = f"- {_t}: {_e}"
+                    if _line not in _seen_errs:
+                        _seen_errs.append(_line)
+                _fail_summary = "\n".join(_seen_errs[-5:])
+                _breaker_msg = (
+                    f"{_no_success_streak} rounds in a row, every tool call you made failed. STOP "
+                    "calling tools and report what failed — do not retry the same or a similar call "
+                    "again. Recent failures:\n" + _fail_summary + _off_note
+                )
+                _no_success_streak = 0
+                _no_success_tool_errors = []
+            else:
+                _breaker_msg = (
                     "You're repeating tool calls without converging. STOP calling "
                     "tools and end the turn one of two ways: (a) write your best "
                     "final answer NOW from the information already gathered, or "
                     "(b) if you're genuinely blocked, say plainly what's blocking "
                     "you in a sentence or two." + _off_note
-                ),
-            })
+                )
+            _force_answer = True
+            messages.append({"role": "system", "content": _breaker_msg})
             full_response += "\n\n"
             yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
             continue
@@ -3227,6 +3268,7 @@ async def stream_agent_loop(
         # Execute each tool block
         tool_results = []
         tool_result_texts = []  # plain text for native tool role messages
+        _round_tool_outcomes = []  # (tool_type, error) per call this round, for the no-success breaker
         budget_hit = False
         for i, block in enumerate(tool_blocks):
             # --- Tool budget check ---
@@ -3292,6 +3334,9 @@ async def stream_agent_loop(
                         f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
                     )
                 desc, result = await _tool_task
+
+            _failed = bool(result.get("error")) or result.get("success") is False
+            _round_tool_outcomes.append((block.tool_type, (result.get("error") or "failed") if _failed else ""))
 
             # A skill the model just loaded can prescribe tools that weren't
             # RAG-selected this turn (declared via requires_toolsets in its
