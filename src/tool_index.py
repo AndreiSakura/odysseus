@@ -42,6 +42,26 @@ ALWAYS_AVAILABLE = frozenset({
     "ask_user",
     # Write back to the active plan (tick steps done / revise) during execution.
     "update_plan",
+    # The "files" domain (agent_loop._DOMAIN_TOOL_MAP["files"]). Domain
+    # detection for this set is a literal keyword regex (file/folder/shell/
+    # bash/python/...); a detailed, technically-worded request can describe
+    # exactly this kind of work (reading configs, logs, running commands)
+    # without ever using one of those words, so retrieval silently drops
+    # shell/file access for the whole turn. The model then can't tell the
+    # difference between "no such tool" and "tool not offered this turn",
+    # guesses a real tool name from training, gets a mismatched schema back,
+    # and drifts. Keeping these always-offered costs a fixed, small prompt
+    # overhead per turn; going without them cost a stuck 12-round session.
+    "bash",
+    "python",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "grep",
+    "glob",
+    "ls",
+    "get_workspace",
+    "manage_bg_jobs",
 })
 
 # Tools that the Personal Assistant always has access to during scheduled
