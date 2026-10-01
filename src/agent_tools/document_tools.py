@@ -362,6 +362,15 @@ class CreateDocumentTool:
         session_id = ctx.get("session_id")
         owner = ctx.get("owner")
 
+        # Optional <source_path>…</source_path>: load the body from a file on
+        # disk (e.g. a transcript a script just wrote) instead of making the
+        # model re-type thousands of tokens it already has on disk.
+        source_path = None
+        msp = _re.search(r"<source_path>\s*(.*?)\s*</source_path>", raw, _re.DOTALL | _re.IGNORECASE)
+        if msp:
+            source_path = msp.group(1).strip()
+            raw = raw[:msp.start()] + raw[msp.end():]
+
         # Known languages the editor understands (match the <select> in HTML)
         _KNOWN_LANGS = {
             "python", "javascript", "typescript", "html", "css", "markdown", "json",
@@ -396,6 +405,18 @@ class CreateDocumentTool:
                     lines = lines[1:]
             if content is None:
                 content = "\n".join(lines)
+
+        if source_path:
+            from src.tool_execution import _resolve_tool_path
+            try:
+                resolved = _resolve_tool_path(source_path)
+                with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
+                    file_text = fh.read()
+            except (ValueError, OSError) as e:
+                return {"error": f"create_document: cannot read source_path '{source_path}': {e}"}
+            # Any inline content the model also sent goes above the file body
+            # (e.g. a short header); the file is the main content.
+            content = f"{content.strip()}\n\n{file_text}" if (content or "").strip() else file_text
 
         # Validate language: must be in known set, else default based on content
         if language and language not in _KNOWN_LANGS:
