@@ -621,10 +621,15 @@ def build_user_content(
             else:
                 content.insert(0, {"type": "text", "text": extracted_text.lstrip()})
         else:
+            # Keep the original filename and on-disk path in the message itself:
+            # it is persisted with the turn, so later turns ("name the output
+            # after the original file", "repeat for that file") still have them
+            # after the per-turn upload manifest is gone.
+            placeholder = f"[Attached non-text file: {os.path.basename(display_name)} (path: {path})]"
             if content and content[0]["type"] == "text":
-                content[0]["text"] += "\n\n[Attached non-text file]"
+                content[0]["text"] += "\n\n" + placeholder
             else:
-                content.insert(0, {"type": "text", "text": "[Attached non-text file]"})
+                content.insert(0, {"type": "text", "text": placeholder})
 
     has_media = any(item.get("type") in ["image_url", "audio"] for item in content if isinstance(item, dict))
     if not has_media and content:

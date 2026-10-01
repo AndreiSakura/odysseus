@@ -454,9 +454,19 @@ def _promote_image_fields(result: Dict) -> None:
 _BG_MARKERS = {"#!bg", "#bg", "# bg", "#background", "# background", "@background", "# @background"}
 
 
+_TRAILING_BG_RE = re.compile(r"\s+#!bg\s*$", re.IGNORECASE)
+_TRAILING_AMP_RE = re.compile(r"(?<![&|>\\])\s*&\s*$")
+
+
 def _split_bg_marker(content: str):
-    """If the bash content's first non-empty line is a background marker
-    (e.g. `#!bg`), return (True, command_without_marker); else (False, content)."""
+    """If the bash content asks to run in the background, return
+    (True, command_without_marker); else (False, content).
+
+    Accepted forms: a first non-empty line that is a marker (`#!bg`), a
+    trailing ` #!bg` on the last line, or a single-line command ending in a
+    bare `&`. Models routinely use the last two; a bare `&` otherwise detaches
+    the process outside the job system, so it is never tracked or reported
+    back and the model re-runs the whole command in the foreground."""
     lines = content.split("\n")
     i = 0
     while i < len(lines) and not lines[i].strip():
@@ -464,6 +474,15 @@ def _split_bg_marker(content: str):
     if i < len(lines) and lines[i].strip().lower() in _BG_MARKERS:
         del lines[i]
         return True, "\n".join(lines).strip()
+    stripped = content.strip()
+    if not stripped:
+        return False, content
+    body = stripped.split("\n")
+    if _TRAILING_BG_RE.search(body[-1]):
+        body[-1] = _TRAILING_BG_RE.sub("", body[-1])
+        return True, "\n".join(body).strip()
+    if len(body) == 1 and _TRAILING_AMP_RE.search(body[0]):
+        return True, _TRAILING_AMP_RE.sub("", body[0]).strip()
     return False, content
 
 

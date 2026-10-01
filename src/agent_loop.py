@@ -382,7 +382,8 @@ Return the absolute path of the active workspace folder. File tools are CONFINED
 <language>
 <content>
 ```
-Create a NEW document in the editor panel. Only use when the user explicitly asks for a new file/document. If a document is already open in the editor, the user's request "fix this", "add X", "change Y", etc. refers to THAT document — use edit_document, never create_document.""",
+Create a NEW document in the editor panel. Only use when the user explicitly asks for a new file/document. If a document is already open in the editor, the user's request "fix this", "add X", "change Y", etc. refers to THAT document — use edit_document, never create_document.
+To turn an existing file on disk (e.g. a transcript) into a document, do NOT read it and re-type it: put `<source_path>/abs/path/file.md</source_path>` on the line after the title (content may then be empty) and the file is loaded server-side.""",
 
     "edit_document": """\
 ```edit_document
@@ -3254,6 +3255,9 @@ async def stream_agent_loop(
                         lang = lines[1].strip()
                         content_start = 2
                     content = "\n".join(lines[content_start:]) if len(lines) > content_start else ""
+                    # source_path docs are loaded server-side; the doc_update after
+                    # execution carries the real body, so don't stream the raw tag.
+                    content = re.sub(r"<source_path>.*?</source_path>\s*", "", content, flags=re.DOTALL)
                     yield f'data: {json.dumps({"type": "doc_stream_open", "title": title, "language": lang})}\n\n'
                     if content:
                         yield f'data: {json.dumps({"type": "doc_stream_delta", "content": content})}\n\n'

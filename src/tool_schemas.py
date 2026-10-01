@@ -192,9 +192,10 @@ FUNCTION_TOOL_SCHEMAS = [
                 "properties": {
                     "title": {"type": "string", "description": "Document title"},
                     "language": {"type": "string", "description": "Programming language or format (e.g. python, javascript, markdown, text)"},
-                    "content": {"type": "string", "description": "The document content"}
+                    "content": {"type": "string", "description": "The document content. Optional when source_path is given (then it is prepended as a short header, or omit it)."},
+                    "source_path": {"type": "string", "description": "Absolute path of a text/markdown file on disk to use as the document content (e.g. a transcript written by transcribe_media.py). Use this instead of reading a file and re-typing it into content — it is far faster and exact."}
                 },
-                "required": ["title", "content"]
+                "required": ["title"]
             }
         }
     },
@@ -1284,6 +1285,8 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         parts = [args.get("title", "Untitled")]
         if args.get("language"):
             parts.append(args["language"])
+        if args.get("source_path"):
+            parts.append(f"<source_path>{args['source_path']}</source_path>")
         parts.append(args.get("content", ""))
         content = "\n".join(parts)
     elif tool_type == "edit_document":
