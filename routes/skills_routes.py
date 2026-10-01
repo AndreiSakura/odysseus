@@ -683,13 +683,19 @@ def _audit_finalize_status(skills_manager, name: str, owner, verdict: str,
     """Apply the user's audit publishing policy.
 
     Audit is the final pass: skills that pass at/above the threshold are
-    published; anything below threshold, inconclusive, failing, or marked
+    published; anything below threshold, failing, or marked
     unnecessary/redundant is returned to draft. This intentionally demotes a
     previously-published skill when a fresh audit no longer clears policy.
+
+    An inconclusive/unknown verdict leaves the status untouched: it means the
+    test couldn't judge the skill (typically the model endpoint was down), not
+    that the skill is bad, so it must not unpublish a working skill.
     """
     auto_publish, min_conf = _audit_auto_publish_policy(owner)
     necessary = True
     current = next((s for s in skills_manager.load(owner=owner) if s.get("name") == name), None)
+    if verdict in ("inconclusive", "unknown"):
+        return (current or {}).get("status") or "draft"
     generic_reason = _audit_generic_blocker(current, necessity, verdict_data)
     if isinstance(necessity, dict) and necessity.get("necessary") is False:
         necessary = False

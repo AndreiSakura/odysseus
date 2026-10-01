@@ -25,7 +25,7 @@ import os
 import time
 from typing import Dict, Iterable, List, Optional
 
-from .skill_format import Skill, slugify
+from .skill_format import Skill, emit_frontmatter, parse_frontmatter, slugify
 
 logger = logging.getLogger(__name__)
 
@@ -172,11 +172,15 @@ class SkillsManager:
             logger.warning(f"Failed to parse {path}: {e}")
             return None
 
-    def _write_skill(self, sk: Skill) -> str:
+    def _write_skill(self, sk: Skill, body: Optional[str] = None) -> str:
         path = self._skill_file(sk.category or "general", sk.name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         from core.atomic_io import atomic_write_text
-        atomic_write_text(path, sk.to_markdown())
+        if body is None:
+            text = sk.to_markdown()
+        else:
+            text = f"---\n{emit_frontmatter(sk.to_frontmatter())}\n---\n\n{body}"
+        atomic_write_text(path, text)
         sk.path = path
         return path
 
@@ -452,6 +456,18 @@ class SkillsManager:
                 continue
 
             old_dir = os.path.dirname(path)
+            # Metadata-only updates (status, confidence, tags, ...) keep the
+            # body verbatim: re-emitting it from the parsed sections flattens
+            # multi-line steps (code blocks) and drops unknown headings.
+            body_keys = ("when_to_use", "body_extra", "procedure", "pitfalls",
+                         "verification", "problem", "solution", "steps")
+            original_body = None
+            if not any(k in updates for k in body_keys):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        original_body = parse_frontmatter(f.read())[1]
+                except OSError:
+                    original_body = None
 
             scalar_keys = (
                 "description", "version", "category", "status", "confidence",
@@ -498,7 +514,7 @@ class SkillsManager:
                 if old_usage_key in usage:
                     usage[self._usage_key(sk.name, sk.owner)] = usage.pop(old_usage_key)
                     self._save_usage(usage)
-            self._write_skill(sk)
+            self._write_skill(sk, body=original_body)
             return True
         return False
 
