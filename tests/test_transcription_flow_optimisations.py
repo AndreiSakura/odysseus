@@ -18,6 +18,9 @@ from src.tool_execution import _split_bg_marker
 @pytest.mark.parametrize("cmd,expected", [
     ("#!bg\npython3 x.py", (True, "python3 x.py")),
     ("python3 x.py --out a.md #!bg", (True, "python3 x.py --out a.md")),
+    ("#!bg python3 x.py --out a.md", (True, "python3 x.py --out a.md")),
+    ("#!bg python3 x.py\necho done", (True, "python3 x.py\necho done")),
+    ("# bg is short for background\necho hi", (False, "# bg is short for background\necho hi")),
     ("python3 x.py --out a.md &", (True, "python3 x.py --out a.md")),
     ("python3 x.py > log 2>&1 &", (True, "python3 x.py > log 2>&1")),
     ("make && make install", (False, "make && make install")),

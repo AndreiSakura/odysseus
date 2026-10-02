@@ -454,6 +454,7 @@ def _promote_image_fields(result: Dict) -> None:
 _BG_MARKERS = {"#!bg", "#bg", "# bg", "#background", "# background", "@background", "# @background"}
 
 
+_LEADING_BG_RE = re.compile(r"\s*(?:#!bg|#bg|#background|@background)\s+(?=\S)", re.IGNORECASE)
 _TRAILING_BG_RE = re.compile(r"\s+#!bg\s*$", re.IGNORECASE)
 _TRAILING_AMP_RE = re.compile(r"(?<![&|>\\])\s*&\s*$")
 
@@ -474,6 +475,14 @@ def _split_bg_marker(content: str):
     if i < len(lines) and lines[i].strip().lower() in _BG_MARKERS:
         del lines[i]
         return True, "\n".join(lines).strip()
+    # Marker and command on one line (`#!bg python3 x.py`). Unhandled, bash
+    # runs the whole line as a comment: nothing happens, exit 0, and the
+    # model reports a job that never started.
+    if i < len(lines):
+        m = _LEADING_BG_RE.match(lines[i])
+        if m:
+            lines[i] = lines[i][m.end():]
+            return True, "\n".join(lines).strip()
     stripped = content.strip()
     if not stripped:
         return False, content
