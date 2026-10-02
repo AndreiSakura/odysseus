@@ -97,3 +97,27 @@ def test_create_document_source_path_outside_roots_errors(monkeypatch):
     raw = "t\n<source_path>/etc/passwd</source_path>"
     result = asyncio.run(CreateDocumentTool().execute(raw, {"session_id": "s1"}))
     assert "error" in result and "outside the allowed roots" in result["error"]
+
+
+def test_duplicate_upload_takes_the_new_filename(tmp_path):
+    """Re-uploading identical bytes under a new name reuses the stored file,
+    but the chat must see the new name, not the one from the first upload."""
+    import io
+
+    from fastapi import UploadFile
+    from src.upload_handler import UploadHandler
+
+    handler = UploadHandler(base_dir=str(tmp_path), upload_dir=str(tmp_path / "uploads"))
+    data = b"same bytes" * 100
+
+    def _upload(name):
+        return handler.save_upload(UploadFile(io.BytesIO(data), filename=name), client_ip="127.0.0.1", owner="admin")
+
+    first = _upload("Screen_Recording_2026-07-13_155307.txt")
+    second = _upload("Dell EPNSNOW 2026-07-13 155307.txt")
+
+    assert second["id"] == first["id"] and second["is_duplicate"]
+    assert second["name"] == "Dell EPNSNOW 2026-07-13 155307.txt"
+    info = handler.get_upload_info(first["id"])
+    assert info["original_name"] == "Dell EPNSNOW 2026-07-13 155307.txt"
+    assert "Dell" in info["name"]

@@ -706,6 +706,12 @@ class UploadHandler:
                         # fresh-insert path below; release the lock first.
                         raise LookupError("upload entry vanished mid-dedupe")
                     existing_file["last_accessed"] = datetime.now().isoformat()
+                    # Same bytes re-uploaded under a new name: the stored file
+                    # is reused, but the chat must see the name the user just
+                    # picked — the agent names outputs after it ("keep the
+                    # original file name"), and an old name is just wrong.
+                    existing_file["original_name"] = original_filename
+                    existing_file["name"] = safe_filename
                     current[live_key] = existing_file
                     self._atomic_write_json(uploads_db_path, current)
                 except LookupError:
