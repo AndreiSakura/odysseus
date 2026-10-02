@@ -1671,6 +1671,7 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
       document.querySelectorAll('.list-item.active-session').forEach(el => el.classList.remove('active-session'));
     }
     uiModule.scrollHistoryInstant();
+    if (!isOC) watchBgFollowup(id, msgHistory);
 
     // Fade in and re-enable message animations
     if (chatHistory) {
@@ -2083,6 +2084,55 @@ export function clearStreaming(sessionId) {
   _streamingSessions.delete(sessionId);
   _updateResearchDots();
   _updateRailNotifs();
+  watchBgFollowup(sessionId);
+}
+
+// A `#!bg` bash job finishes server-side and src/bg_monitor.py saves the
+// agent's follow-up reply to the session — with no push to an open page, so
+// the reply only appeared after a manual reload. While the open chat's latest
+// message is one that started a background job, poll its history and
+// re-render once a newer message lands.
+const _BG_POLL_MS = 10000;
+const _BG_POLL_MAX_MS = 3 * 60 * 60 * 1000;
+let _bgWatch = null;
+
+function _startedBgJob(history) {
+  const last = history[history.length - 1];
+  if (!last || last.role !== 'assistant') return false;
+  const events = (last.metadata && last.metadata.tool_events) || [];
+  return events.some(e => typeof e.output === 'string' && e.output.startsWith('Started background job'));
+}
+
+export async function watchBgFollowup(sessionId, history = null) {
+  if (_bgWatch) { clearInterval(_bgWatch); _bgWatch = null; }
+  if (!sessionId || sessionId !== currentSessionId) return;
+  try {
+    if (!history) {
+      const res = await fetch(`${API_BASE}/api/history/${sessionId}`);
+      history = (await res.json()).history || [];
+    }
+  } catch { return; }
+  if (sessionId !== currentSessionId || !_startedBgJob(history)) return;
+  const baseLen = history.length;
+  const started = Date.now();
+  const timer = setInterval(async () => {
+    if (sessionId !== currentSessionId || Date.now() - started > _BG_POLL_MAX_MS) {
+      clearInterval(timer);
+      if (_bgWatch === timer) _bgWatch = null;
+      return;
+    }
+    if (_streamingSessions.has(sessionId)) return;  // a live turn will render itself
+    try {
+      const res = await fetch(`${API_BASE}/api/history/${sessionId}`);
+      const latest = (await res.json()).history || [];
+      if (latest.length > baseLen && sessionId === currentSessionId) {
+        clearInterval(timer);
+        if (_bgWatch === timer) _bgWatch = null;
+        selectSession(sessionId, { keepSidebar: true });
+      }
+    } catch { /* transient — retry next tick */ }
+  }, _BG_POLL_MS);
+  _bgWatch = timer;
 }
 
 export function markStreamComplete(sessionId) {
@@ -3122,6 +3172,7 @@ const sessionModule = {
   clearStreaming,
   markStreamComplete,
   clearStreamComplete,
+  watchBgFollowup,
   openLibrary,
   closeLibrary,
   openArchive,

@@ -2908,6 +2908,13 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         // Reset button to idle state
         updateSubmitButton('idle', submitBtn);
 
+        // If this turn started a background job, watch for the follow-up
+        // reply the server saves when it finishes. Short delay so the turn
+        // itself is persisted before the watcher reads the history.
+        if (sessionModule.watchBgFollowup) {
+          setTimeout(() => sessionModule.watchBgFollowup(streamSessionId), 1500);
+        }
+
         // Re-enable message input; on mobile blur to dismiss keyboard
         if (messageInput) {
           messageInput.disabled = false;
