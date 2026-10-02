@@ -205,6 +205,11 @@ function initializeEventListeners() {
     const link = e.target.closest('a.chat-link');
     if (!link) return;
     const href = link.getAttribute('href');
+    // Entity anchors (#document-<id>, #note-<id>, #session-<id>, …) belong to
+    // the chatRenderer.js click delegate. Treating them as a session id here
+    // ran alongside it and switched to a nonexistent "document-<id>" chat: an
+    // empty window with no model selected.
+    if (href && /^#(session|document|note|image|email|event|task|skill|research)-/.test(href)) return;
     if (href && href.startsWith('#') && sessionModule) {
       e.preventDefault();
       sessionModule.selectSession(href.slice(1));
