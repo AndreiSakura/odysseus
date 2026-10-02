@@ -11,6 +11,10 @@
 # Optional extra: install `torch` too if you have a CUDA GPU and want
 # GPU-accelerated transcription — it's auto-detected, CPU is used otherwise.
 faster-whisper
+# PyAV 19 removed av.open(metadata_errors=...), which faster-whisper 1.2.x
+# still passes when decoding audio, so every transcription fails with
+# "open() got an unexpected keyword argument 'metadata_errors'".
+av<19
 
 # Speaker diarization for scripts/transcribe_media.py (labels "Speaker 1",
 # "Speaker 2", ... in transcripts of video/audio files). NOT listed as a
