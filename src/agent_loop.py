@@ -3558,6 +3558,21 @@ async def stream_agent_loop(
                     }) + '\n\n'
                 )
 
+            # Same pattern for new documents: put open + download links in the
+            # reply text itself. Users ask for "a Word file" and otherwise get
+            # an editor tab and, at best, a mention of the Export menu — the
+            # model doesn't reliably write the export links out.
+            if (block.tool_type == "create_document" and result.get("doc_id")
+                    and result.get("action") == "create"):
+                _did = result["doc_id"]
+                _dtitle = (result.get("title") or "Document").replace("[", "(").replace("]", ")")
+                _anchor = (
+                    f"\n\n📄 [{_dtitle}](#document-{_did}) — "
+                    f"[Download Word (.docx)](/api/document/{_did}/export-docx) · "
+                    f"[Download PDF](/api/document/{_did}/export-pdf)\n"
+                )
+                yield 'data: ' + json.dumps({"delta": _anchor}) + '\n\n'
+
             # Inline research: emit the open-link as part of the assistant's
             # actual response text — a `#research-<id>` anchor that chatRenderer
             # turns into a regular clickable link. Saved with the message, so it
