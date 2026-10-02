@@ -200,10 +200,12 @@ def diarize(wav_path: str, num_speakers=None, min_speakers=None, max_speakers=No
     log("Loading pyannote speaker-diarization pipeline...")
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
 
+    on_gpu = False
     try:
         import torch
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
+            on_gpu = True
     except Exception:
         pass
 
@@ -218,7 +220,22 @@ def diarize(wav_path: str, num_speakers=None, min_speakers=None, max_speakers=No
 
     log("Running diarization (this can take a while for long files)...")
     audio_input = _load_waveform(wav_path)
-    output = pipeline(audio_input, **kwargs)
+    try:
+        output = pipeline(audio_input, **kwargs)
+    except Exception as exc:
+        if not on_gpu:
+            raise
+        # The GPU is usually almost full when a local LLM is being served
+        # (CUDA OOM), and torch's CUDA kernels can also fail to JIT-compile
+        # when the nvrtc libraries aren't on the loader path. Either way,
+        # retry on CPU (slower, but it finishes) instead of dropping the
+        # speaker labels.
+        reason = next((ln.strip() for ln in str(exc).splitlines() if ln.strip()), type(exc).__name__)
+        log(f"WARNING: GPU diarization failed ({reason[:200]}); retrying on CPU.")
+        import torch
+        pipeline.to(torch.device("cpu"))
+        torch.cuda.empty_cache()
+        output = pipeline(audio_input, **kwargs)
     # pyannote.audio >=4 wraps the result in a DiarizeOutput dataclass; older
     # 3.x returns the Annotation directly. exclusive_speaker_diarization is
     # the non-overlapping-turns Annotation we want for word-level matching.
