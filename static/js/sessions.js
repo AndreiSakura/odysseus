@@ -1588,12 +1588,13 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
     // declaration had been removed while leaving the references in
     // place, producing a ReferenceError every selectSession.)
     const isOC = meta && (meta.is_openclaw || id === 'openclaw');
-    let msgHistory = [], modelName = null;
+    let msgHistory = [], modelName = null, bgPending = false;
     if (!isOC) {
       const res = await fetch(`${API_BASE}/api/history/${id}`);
       const data = await res.json();
       if (navToken !== _sessionNavToken || currentSessionId !== id) return;
       msgHistory = data.history || [];
+      bgPending = !!data.bg_pending;
       modelName = data.model || null;
       // The model returned by /api/history is the authoritative one the
       // backend will use for this session. Write it back into the cached
@@ -1671,7 +1672,7 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
       document.querySelectorAll('.list-item.active-session').forEach(el => el.classList.remove('active-session'));
     }
     uiModule.scrollHistoryInstant();
-    if (!isOC) watchBgFollowup(id, msgHistory);
+    if (!isOC) watchBgFollowup(id, { history: msgHistory, bg_pending: bgPending });
 
     // Fade in and re-enable message animations
     if (chatHistory) {
@@ -2088,32 +2089,27 @@ export function clearStreaming(sessionId) {
 }
 
 // A `#!bg` bash job finishes server-side and src/bg_monitor.py saves the
-// agent's follow-up reply to the session — with no push to an open page, so
-// the reply only appeared after a manual reload. While the open chat's latest
-// message is one that started a background job, poll its history and
-// re-render once a newer message lands.
+// agent's follow-up reply to the session — with no push to an open page. While
+// the server reports a job still pending for the open chat (`bg_pending` from
+// /api/history: job running, or finished but its follow-up not yet saved),
+// poll and re-render once the follow-up lands. Keyed on the server's job
+// state, not on which message is last: a user reply after the job started
+// ("ok, let me know") used to stop the watch, so the result never appeared.
 const _BG_POLL_MS = 10000;
 const _BG_POLL_MAX_MS = 3 * 60 * 60 * 1000;
 let _bgWatch = null;
 
-function _startedBgJob(history) {
-  const last = history[history.length - 1];
-  if (!last || last.role !== 'assistant') return false;
-  const events = (last.metadata && last.metadata.tool_events) || [];
-  return events.some(e => typeof e.output === 'string' && e.output.startsWith('Started background job'));
-}
-
-export async function watchBgFollowup(sessionId, history = null) {
+export async function watchBgFollowup(sessionId, data = null) {
   if (_bgWatch) { clearInterval(_bgWatch); _bgWatch = null; }
   if (!sessionId || sessionId !== currentSessionId) return;
   try {
-    if (!history) {
+    if (!data) {
       const res = await fetch(`${API_BASE}/api/history/${sessionId}`);
-      history = (await res.json()).history || [];
+      data = await res.json();
     }
   } catch { return; }
-  if (sessionId !== currentSessionId || !_startedBgJob(history)) return;
-  const baseLen = history.length;
+  if (sessionId !== currentSessionId || !data || !data.bg_pending) return;
+  const baseLen = (data.history || []).length;
   const started = Date.now();
   const timer = setInterval(async () => {
     if (sessionId !== currentSessionId || Date.now() - started > _BG_POLL_MAX_MS) {
@@ -2124,11 +2120,13 @@ export async function watchBgFollowup(sessionId, history = null) {
     if (_streamingSessions.has(sessionId)) return;  // a live turn will render itself
     try {
       const res = await fetch(`${API_BASE}/api/history/${sessionId}`);
-      const latest = (await res.json()).history || [];
-      if (latest.length > baseLen && sessionId === currentSessionId) {
+      const latest = await res.json();
+      const grew = (latest.history || []).length > baseLen;
+      if ((grew || !latest.bg_pending) && sessionId === currentSessionId) {
         clearInterval(timer);
         if (_bgWatch === timer) _bgWatch = null;
-        selectSession(sessionId, { keepSidebar: true });
+        // Re-render (which re-arms the watch if another job is still pending).
+        if (grew) selectSession(sessionId, { keepSidebar: true });
       }
     } catch { /* transient — retry next tick */ }
   }, _BG_POLL_MS);

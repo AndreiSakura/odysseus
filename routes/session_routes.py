@@ -751,7 +751,14 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             session = session_manager.get_session(sid)
         except KeyError:
             raise HTTPException(404, f"Session {sid} not found")
-        return {"history": [msg.to_dict() for msg in session.history]}
+        # Lets the chat page keep checking for a background job's follow-up
+        # reply until it lands (static/js/sessions.js watchBgFollowup).
+        try:
+            from src import agent_runs, bg_jobs
+            bg_pending = bg_jobs.session_has_pending(sid) or agent_runs.followup_running(sid)
+        except Exception:
+            bg_pending = False
+        return {"history": [msg.to_dict() for msg in session.history], "bg_pending": bg_pending}
     
     @router.get("/session/{sid}/export")
     def export_session(request: Request, sid: str, fmt: str = "md", filename: str = ""):

@@ -263,6 +263,16 @@ def list_for_session(session_id: str) -> List[Dict[str, Any]]:
     return [r for r in refresh().values() if r.get("session_id") == session_id]
 
 
+def session_has_pending(session_id: str) -> bool:
+    """True while a job in this session is running or finished without its
+    agent follow-up having run yet — i.e. a reply is still on its way."""
+    return any(
+        r.get("status") == "running"
+        or (r.get("status") in ("done", "failed") and not r.get("followed_up"))
+        for r in list_for_session(session_id)
+    )
+
+
 def kill(job_id: str) -> Optional[Dict[str, Any]]:
     """Terminate a running job's process tree and mark it killed. Returns the
     updated record, or None if the id is unknown. Idempotent: a job that already

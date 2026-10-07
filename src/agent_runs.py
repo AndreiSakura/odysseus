@@ -23,14 +23,15 @@ logger = logging.getLogger(__name__)
 
 
 class _Run:
-    __slots__ = ("buffer", "subscribers", "status", "task", "evict_task")
+    __slots__ = ("buffer", "subscribers", "status", "task", "evict_task", "kind")
 
-    def __init__(self) -> None:
+    def __init__(self, kind: str = "chat") -> None:
         self.buffer: list = []          # ordered SSE event strings (replay log)
         self.subscribers: set = set()   # one asyncio.Queue per connected client
         self.status: str = "running"    # running | done | error | stopped
         self.task: Optional[asyncio.Task] = None
         self.evict_task: Optional[asyncio.Task] = None
+        self.kind: str = kind           # chat | bg_followup
 
 
 _RUNS: Dict[str, _Run] = {}
@@ -138,7 +139,32 @@ async def _drain(session_id: str, agen: AsyncGenerator[str, None],
         _schedule_evict(session_id)
 
 
-def start(session_id: str, agen: AsyncGenerator[str, None]) -> _Run:
+def followup_running(session_id: str) -> bool:
+    r = _RUNS.get(session_id)
+    return bool(r and r.status == "running" and r.kind == "bg_followup")
+
+
+async def wait_for_followup(session_id: str, timeout: float = 900) -> bool:
+    """If a background-job follow-up is running in this session, wait for it.
+
+    A user message that arrives mid-follow-up used to start a second, parallel
+    agent run on a stale view of the chat (duplicate documents, contradictory
+    answers, "stop" ignored). Callers await this BEFORE building the turn's
+    context, so the new turn starts after the follow-up and sees its result.
+    Returns True if it waited.
+    """
+    r = _RUNS.get(session_id)
+    if not (r and r.status == "running" and r.kind == "bg_followup" and r.task):
+        return False
+    logger.info("[agent-run] %s: waiting for background follow-up before new turn", session_id)
+    try:
+        await asyncio.wait({r.task}, timeout=timeout)
+    except Exception:
+        pass
+    return True
+
+
+def start(session_id: str, agen: AsyncGenerator[str, None], kind: str = "chat") -> _Run:
     """Start a detached run draining `agen` for a session. If a run is already in
     flight for this session (e.g. a rapid double-send), it's cancelled first."""
     prev = _RUNS.get(session_id)
@@ -149,7 +175,7 @@ def start(session_id: str, agen: AsyncGenerator[str, None]) -> _Run:
             prev_task = prev.task   # new run awaits this before it starts writing
         if prev.evict_task and not prev.evict_task.done():
             prev.evict_task.cancel()
-    run = _Run()
+    run = _Run(kind)
     _RUNS[session_id] = run
     run.task = asyncio.create_task(_drain(session_id, agen, prev_task))
     return run

@@ -25,22 +25,50 @@ POLL_INTERVAL_S = 5
 _FOLLOWUP_MAX_ROUNDS = 12
 
 
-async def _drain_agent(sess, messages):
+async def _drain_agent(sess, messages, saved: "asyncio.Event | None" = None):
     """Run the agent loop headless against a session. Returns
     (final_prose, tool_events) — tool_events in the same shape the live chat
     saves, so the frontend rebuilds them as standard agent-thread tool cards."""
+    from src import agent_runs
     from src.agent_loop import stream_agent_loop
     full = ""
     tool_events = []
     round_num = 1
-    async for chunk in stream_agent_loop(
-        sess.endpoint_url, sess.model, messages,
-        headers=getattr(sess, "headers", None),
-        context_length=getattr(sess, "context_length", 0) or 0,
-        session_id=sess.id,
-        max_rounds=_FOLLOWUP_MAX_ROUNDS,
-        owner=getattr(sess, "owner", None),
-    ):
+
+    # Run as the session's tracked agent run (kind "bg_followup") rather than a
+    # private loop: a user message sent meanwhile then waits for it
+    # (agent_runs.wait_for_followup) instead of starting a second agent in
+    # parallel, and the Stop button can cancel it. The tee hands each event to
+    # this function too, to build the message saved below.
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _tee():
+        try:
+            async for ch in stream_agent_loop(
+                sess.endpoint_url, sess.model, messages,
+                headers=getattr(sess, "headers", None),
+                context_length=getattr(sess, "context_length", 0) or 0,
+                session_id=sess.id,
+                max_rounds=_FOLLOWUP_MAX_ROUNDS,
+                owner=getattr(sess, "owner", None),
+            ):
+                queue.put_nowait(ch)
+                yield ch
+        finally:
+            queue.put_nowait(None)
+        # Keep the run "running" until the caller has saved the reply, so a
+        # waiting user turn (wait_for_followup) builds its context after it.
+        if saved is not None:
+            try:
+                await asyncio.wait_for(saved.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+
+    agent_runs.start(sess.id, _tee(), kind="bg_followup")
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
         if not chunk.startswith("data: "):
             continue
         body = chunk[6:].strip()
@@ -77,7 +105,6 @@ async def _run_followup(rec: dict) -> bool:
     if the follow-up completed (or there's nothing to do) — i.e. it's safe to
     mark followed_up. Returns False to retry on the next tick."""
     from src.ai_interaction import get_session_manager
-    from core.models import ChatMessage
 
     sm = get_session_manager()
     if not sm:
@@ -110,8 +137,17 @@ async def _run_followup(rec: dict) -> bool:
     context = sess.get_context_messages()
     context.append({"role": "user", "content": inject})
 
-    full, tool_events = await _drain_agent(sess, context)
+    saved = asyncio.Event()
+    try:
+        full, tool_events = await _drain_agent(sess, context, saved)
+        _save_followup(sm, sess, rec, full, tool_events)
+    finally:
+        saved.set()
+    return True
 
+
+def _save_followup(sm, sess, rec, full, tool_events):
+    from core.models import ChatMessage
     # Persist ONLY the assistant continuation so it renders as a normal agent
     # turn — a standard chat bubble plus `tool_events` that the frontend
     # rebuilds into the usual agent-thread tool cards (chatRenderer:1494). The
@@ -129,7 +165,6 @@ async def _run_followup(rec: dict) -> bool:
     sm.save_sessions()
     logger.info("bg-followup: auto-continued session %s for job %s (%d chars, %d tools)",
                 sess.id, rec["id"], len(full), len(tool_events))
-    return True
 
 
 async def _loop():

@@ -487,6 +487,12 @@ def setup_chat_routes(
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
         compare_mode = str(form_data.get("compare_mode", "")).lower() == "true"
         incognito = str(form_data.get("incognito", "")).lower() == "true"
+        # A background-job follow-up may be mid-run in this chat (e.g. the user
+        # asks "did you finish?" while it's building the documents). Let it
+        # finish first so this turn sees its result, instead of a second agent
+        # running in parallel on a stale history.
+        if session and not compare_mode:
+            await agent_runs.wait_for_followup(session)
         # Plan mode is not part of the merge-ready UI. Ignore stale clients or
         # manual form posts that still send plan_mode=true.
         plan_mode = False
