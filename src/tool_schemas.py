@@ -259,6 +259,7 @@ FUNCTION_TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "doc_id": {"type": "string", "description": "Id of the document to replace (from its #document-<id> link). Defaults to the active document — pass it whenever the chat has more than one document."},
+                    "title": {"type": "string", "description": "New document title. Also sets the download file name, e.g. '<recording name>_transcription'. Can be given alone to just rename."},
                     "content": {"type": "string", "description": "Complete new document content. Omit when source_path is given."},
                     "source_path": {"type": "string", "description": "Absolute path of a text/markdown file whose contents become the document. Use instead of re-typing a file into content."}
                 },
@@ -1319,6 +1320,8 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         content = args.get("content", "") or ""
         if args.get("source_path"):
             content = f"<source_path>{args['source_path']}</source_path>\n" + content
+        if args.get("title"):
+            content = f"<doc_title>{args['title']}</doc_title>\n" + content
         if args.get("doc_id"):
             content = f"<doc_id>{args['doc_id']}</doc_id>\n" + content
     elif tool_type == "search_chats":

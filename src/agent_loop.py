@@ -3305,7 +3305,7 @@ async def stream_agent_loop(
                     # Pre-stream the full replacement content so user sees it immediately.
                     # A source_path/doc_id update is resolved server-side and its
                     # doc_update carries the real body — nothing to pre-stream.
-                    if re.search(r"<(?:source_path|doc_id)>", block.content):
+                    if re.search(r"<(?:source_path|doc_id|doc_title)>", block.content):
                         break
 
         # Execute each tool block

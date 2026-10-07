@@ -253,6 +253,13 @@ class CreateDocumentTool:
             # Any inline content the model also sent goes above the file body
             # (e.g. a short header); the file is the main content.
             content = f"{content.strip()}\n\n{file_text}" if (content or "").strip() else file_text
+            # No real title: name the document after the file. The export's
+            # download name comes from the title, and a transcript saved as
+            # <recording>_transcription.md must download as that, not
+            # "Untitled.docx".
+            if not (title or "").strip() or title.strip().lower() == "untitled":
+                import os as _os
+                title = _os.path.splitext(_os.path.basename(source_path))[0] or title
 
         # Validate language: must be in known set, else default based on content
         if language and language not in _KNOWN_LANGS:
@@ -355,6 +362,11 @@ class UpdateDocumentTool:
         if m_src:
             source_path = m_src.group(1).strip()
             raw = raw[:m_src.start()] + raw[m_src.end():]
+        new_title = None
+        m_title = _re.search(r"<doc_title>\s*(.*?)\s*</doc_title>", raw, _re.DOTALL | _re.IGNORECASE)
+        if m_title:
+            new_title = m_title.group(1).strip() or None
+            raw = raw[:m_title.start()] + raw[m_title.end():]
         content = raw
         if source_path:
             from src.tool_execution import _resolve_tool_path
@@ -363,8 +375,8 @@ class UpdateDocumentTool:
                     content = fh.read()
             except (ValueError, OSError) as e:
                 return {"error": f"update_document: cannot read source_path '{source_path}': {e}"}
-        if not content.strip():
-            return {"error": "update_document: no content (give content or a source_path)"}
+        if not content.strip() and not new_title:
+            return {"error": "update_document: no content (give content, a source_path or a title)"}
 
         target_id = explicit_id or ctx.get("doc_id", None) or _active_document_id
         owner = ctx.get("owner")
@@ -385,6 +397,10 @@ class UpdateDocumentTool:
             if not doc:
                 return {"error": "No documents exist to update"}
 
+            if new_title:
+                doc.title = new_title
+            if not content.strip():
+                content = doc.current_content or ""  # rename only
             is_email_doc = doc.language == "email" or _looks_like_email_document(doc.current_content or "", doc.title or "")
             new_content = _coerce_email_document_content(doc.current_content or "", content) if is_email_doc else content.strip()
             if is_email_doc:

@@ -263,3 +263,54 @@ def test_hand_built_docx_is_refused_with_guidance(monkeypatch):
     desc, result = asyncio.run(_execute_tool_block_impl(ToolBlock("python", code), session_id="s1"))
     assert "BLOCKED" in desc
     assert "create_document" in result["error"] and result["exit_code"] == 1
+
+
+# ---- document titles: named after the source file; renamable -------------
+
+def test_create_document_without_title_is_named_after_source_file(tmp_path, monkeypatch):
+    import src.database as database
+    import src.tool_execution as tool_execution
+    from src.agent_tools.document_tools import CreateDocumentTool
+
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return None
+
+    class _CreateDB(_DB):
+        def query(self, *a, **k):
+            return _Q()
+
+    class _Model(_Row):
+        id = None
+
+    db = _CreateDB()
+    monkeypatch.setattr(database, "SessionLocal", lambda: db, raising=False)
+    for name in ("Document", "DocumentVersion", "Session"):
+        monkeypatch.setattr(database, name, _Model, raising=False)
+    monkeypatch.setattr(tool_execution, "_resolve_tool_path", lambda p: p)
+    f = tmp_path / "DPW_EPN_SNOW_20260626_130021_transcription.md"
+    f.write_text("**Andrei** [00:00:01]\nYeah\n", encoding="utf-8")
+
+    result = asyncio.run(CreateDocumentTool().execute(f"Untitled\n<source_path>{f}</source_path>\n", {"session_id": "s1"}))
+    assert result["title"] == "DPW_EPN_SNOW_20260626_130021_transcription"
+
+
+def test_update_document_can_rename(monkeypatch):
+    from src.agent_tools.document_tools import UpdateDocumentTool
+
+    docs = {"tx": _Doc("tx", "Untitled", "**Andrei** [00:00:01]\nYeah")}
+    _patch_update(monkeypatch, docs)
+    raw = "<doc_id>tx</doc_id>\n<doc_title>DPW_EPN_SNOW_20260626_130021_transcription</doc_title>\n"
+    result = asyncio.run(UpdateDocumentTool().execute(raw, {}))
+    assert result["title"] == "DPW_EPN_SNOW_20260626_130021_transcription"
+    assert docs["tx"].current_content == "**Andrei** [00:00:01]\nYeah"  # content kept
+
+
+def test_update_document_title_arg_becomes_tag():
+    from src.tool_schemas import function_call_to_tool_block
+
+    block = function_call_to_tool_block("update_document", '{"doc_id": "tx", "title": "a_transcription"}')
+    assert "<doc_title>a_transcription</doc_title>" in block.content
