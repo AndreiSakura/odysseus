@@ -7594,7 +7594,7 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 
   /** Enter diff mode — show line-level diff for review */
   function enterDiffMode(oldContent, newContent) {
-    if (_diffModeActive) exitDiffMode(true);
+    if (_diffModeActive) _settleDiffToServerState();
 
     _diffModeActive = true;
     _diffOldContent = oldContent;
@@ -7854,7 +7854,17 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
   }
 
   /** Exit diff mode and apply resolved changes */
-  function exitDiffMode(discard) {
+  // An AI edit is already saved server-side when its diff is shown for review.
+  // When the next AI update/stream arrives, end the review by keeping that
+  // saved version — never "reject" it and save the old text back, which
+  // silently reverted every previous AI edit (each update undid the last one).
+  function _settleDiffToServerState() {
+    if (!_diffModeActive) return;
+    _diffChunks.forEach(c => { c.accepted = true; });
+    exitDiffMode(false, { save: false });
+  }
+
+  function exitDiffMode(discard, { save = true } = {}) {
     if (!_diffModeActive) return;
     _diffModeActive = false;
 
@@ -7919,7 +7929,7 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 
     syncHighlighting();
     updateLineNumbers(textarea ? textarea.value : '');
-    saveDocument({ silent: true });
+    if (save) saveDocument({ silent: true });
   }
 
   /** Check if diff mode is active */
@@ -9283,9 +9293,10 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
     // open on the current one, streamDocOpen reassigns activeDocId below; if the
     // stale diff isn't cleared first, a later exitDiffMode applies the old doc's
     // content to the new one and overwrites it (issue #2467). activeDocId still
-    // points at the previously-active doc here, so exitDiffMode(true) restores
-    // and saves THAT doc — same guard handleDocUpdate/switchToDoc use.
-    if (_diffModeActive) exitDiffMode(true);
+    // points at the previously-active doc here. Settle it to the version the
+    // server already saved (the AI edit) instead of restoring + saving the old
+    // text, which reverted that edit.
+    if (_diffModeActive) _settleDiffToServerState();
     // If already streaming a doc, reuse it (don't create a second temp doc)
     if (_streamDocId && docs.has(_streamDocId)) {
       const existing = docs.get(_streamDocId);
@@ -9532,8 +9543,10 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
     // doc and silently overwrites it (issue #2467). activeDocId still points at
     // the previously-active doc here, so exitDiffMode(true) restores and saves
     // THAT doc before we reassign activeDocId below — mirroring switchToDoc()
-    // and enterDiffMode().
-    if (_diffModeActive) exitDiffMode(true);
+    // and enterDiffMode(). The diff being shown is the previous AI edit, which
+    // the server already saved: settle to it rather than restoring + saving
+    // the old text (that reverted each AI edit as soon as the next arrived).
+    if (_diffModeActive) _settleDiffToServerState();
     let docId = data.doc_id;
     const newContent = data.content || '';
 
