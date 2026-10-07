@@ -32,8 +32,12 @@ def test_substring_inside_word_does_not_force_email_tools():
 def test_substring_inside_word_does_not_force_document_tools():
     ti = _index()
     # "prefix" contains "fix"; "deadline"/"online" contain "line".
+    # create/update_document are also in ALWAYS_AVAILABLE (so a file can always
+    # be delivered), so pass a non-document base to isolate the keyword loop —
+    # same approach as the serve-tools test below. The "fix"/"line" hints must
+    # NOT fire on substrings.
     for q in ("prefix the output with a label", "the deadline is online already"):
-        tools = ti.get_tools_for_query(q)
+        tools = ti.get_tools_for_query(q, always_include={"ask_user"})
         assert "edit_document" not in tools, q
         assert "update_document" not in tools, q
 

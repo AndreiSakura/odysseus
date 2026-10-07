@@ -32,6 +32,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import warnings
+
+# pyannote warns at import when torchcodec can't load, dumping every FFmpeg
+# version's loader error (~100 lines). We decode audio ourselves
+# (_load_waveform), so it's noise that buries the useful job output.
+warnings.filterwarnings("ignore", message=r"(?s).*torchcodec.*")
 
 
 def _fix_user_site_packages() -> None:
@@ -360,12 +366,23 @@ def main():
         transcript = build_transcript(tagged)
 
         if args.output:
+            out_dir = os.path.dirname(os.path.abspath(args.output))
+            os.makedirs(out_dir, exist_ok=True)
             with open(args.output, "w") as f:
                 f.write(transcript)
             log(f"DONE {args.output}")
         else:
             print(transcript)
             log("DONE (stdout)")
+        # Last thing printed, so it survives head/tail truncation of the job
+        # log: who-said-what samples the agent shows the user to get names.
+        if turns:
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from speakers import preview
+                log("\n" + preview(transcript))
+            except Exception as exc:  # preview is a convenience, never fatal
+                log(f"(speaker preview unavailable: {exc})")
 
     except Exception as exc:
         log(f"ERROR: {exc}")

@@ -454,6 +454,21 @@ def _promote_image_fields(result: Dict) -> None:
 _BG_MARKERS = {"#!bg", "#bg", "# bg", "#background", "# background", "@background", "# @background"}
 
 
+_OFFICE_WRITER_IMPORT_RE = re.compile(
+    r"\b(?:from\s+docx\s+import|import\s+docx\b|from\s+reportlab|import\s+reportlab"
+    r"|from\s+fpdf\s+import|import\s+fpdf\b)"
+)
+_OFFICE_WRITER_SAVE_RE = re.compile(r"\.(?:save|output|build)\s*\(")
+
+
+def _builds_office_file(code: str) -> bool:
+    """True when a bash/python snippet writes a Word/PDF file itself
+    (python-docx / reportlab / fpdf import AND a save/output/build call).
+    Reading an attached .docx (Document(path) without saving) is fine."""
+    code = code or ""
+    return bool(_OFFICE_WRITER_IMPORT_RE.search(code) and _OFFICE_WRITER_SAVE_RE.search(code))
+
+
 _LEADING_BG_RE = re.compile(r"\s*(?:#!bg|#bg|#background|@background)\s+(?=\S)", re.IGNORECASE)
 _TRAILING_BG_RE = re.compile(r"\s+#!bg\s*$", re.IGNORECASE)
 _TRAILING_AMP_RE = re.compile(r"(?<![&|>\\])\s*&\s*$")
@@ -684,6 +699,25 @@ async def _execute_tool_block_impl(
         logger.warning("Public tool policy blocked owner=%r tool=%s", owner, tool)
         return desc, result
 
+
+    # Hand-built Word/PDF files dead-end: a file a script writes to disk has no
+    # route back to the user's browser, so the agent ends up linking server
+    # paths (/app/data/...docx, invented localhost URLs) that can't be opened.
+    # Documents made with create_document get working Word/PDF download links
+    # automatically, so refuse the script and point there instead.
+    if tool in ("bash", "python") and _builds_office_file(content):
+        desc = f"{tool}: BLOCKED (hand-built .docx/.pdf)"
+        return desc, {
+            "error": (
+                "Writing .docx/.pdf files yourself is not allowed: the user cannot download a "
+                "file a script saves on the server. Put the content in a document instead — "
+                "create_document (with source_path=<file.md> to load a transcript or other file), "
+                "or update_document with doc_id + source_path if it exists. The reply then gets "
+                "working 'Download Word (.docx)' and 'Download PDF' links automatically. Never give "
+                "server paths or file:// links as download links."
+            ),
+            "exit_code": 1,
+        }
 
     # Background execution: a `bash` block whose first line is the `#!bg`
     # marker runs DETACHED — returns a job id immediately so the chat stream

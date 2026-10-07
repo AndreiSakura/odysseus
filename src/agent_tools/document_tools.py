@@ -333,11 +333,40 @@ class CreateDocumentTool:
 
 class UpdateDocumentTool:    
     async def execute(self, content: str, ctx: dict) -> Dict:
-        """Update an existing document. Content = full new document text."""
+        """Update an existing document. Content = full new document text.
+
+        Optional tags: <doc_id>…</doc_id> picks the document explicitly (the
+        active-document default has replaced the wrong one when a chat has
+        several), and <source_path>…</source_path> loads the new content from a
+        file on disk, e.g. a transcript after its speakers were renamed.
+        """
+        import re as _re
         import uuid
         from src.database import SessionLocal, Document, DocumentVersion
 
-        target_id = ctx.get("doc_id", None) or _active_document_id
+        raw = content or ""
+        explicit_id = None
+        source_path = None
+        m_id = _re.search(r"<doc_id>\s*(.*?)\s*</doc_id>", raw, _re.DOTALL | _re.IGNORECASE)
+        if m_id:
+            explicit_id = m_id.group(1).strip().removeprefix("#document-") or None
+            raw = raw[:m_id.start()] + raw[m_id.end():]
+        m_src = _re.search(r"<source_path>\s*(.*?)\s*</source_path>", raw, _re.DOTALL | _re.IGNORECASE)
+        if m_src:
+            source_path = m_src.group(1).strip()
+            raw = raw[:m_src.start()] + raw[m_src.end():]
+        content = raw
+        if source_path:
+            from src.tool_execution import _resolve_tool_path
+            try:
+                with open(_resolve_tool_path(source_path), "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except (ValueError, OSError) as e:
+                return {"error": f"update_document: cannot read source_path '{source_path}': {e}"}
+        if not content.strip():
+            return {"error": "update_document: no content (give content or a source_path)"}
+
+        target_id = explicit_id or ctx.get("doc_id", None) or _active_document_id
         owner = ctx.get("owner")
 
         db = SessionLocal()
@@ -345,6 +374,8 @@ class UpdateDocumentTool:
             doc = None
             if target_id:
                 doc = _get_owned_document(db, Document, target_id, owner)
+            if not doc and explicit_id:
+                return {"error": f"update_document: document '{explicit_id}' not found"}
             if not doc:
                 doc = _most_recent_owned_document(db, Document, owner)
                 if doc:

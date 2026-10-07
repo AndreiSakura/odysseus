@@ -62,6 +62,16 @@ ALWAYS_AVAILABLE = frozenset({
     "ls",
     "get_workspace",
     "manage_bg_jobs",
+    # Delivering a file to the user. A short follow-up like "Speaker 2 is me"
+    # classifies as no domain, so the documents domain didn't fire and the
+    # model — mid-way through a transcription — had no way to create the
+    # document: it promised "Let me create the .docx", got nudged, repeated
+    # itself, and when it finally acted it hand-built a .docx with python and
+    # linked a server path the user couldn't open. These are how a Word/PDF
+    # download reaches the user, so they must always be offered.
+    "create_document",
+    "update_document",
+    "manage_documents",
 })
 
 # Tools that the Personal Assistant always has access to during scheduled

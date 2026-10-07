@@ -254,13 +254,15 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "update_document",
-            "description": "Replace the ENTIRE active document. ONLY use for genuine full rewrites (>50% of lines changed). For any smaller change, use edit_document — echoing back the whole file for small edits is wasteful.",
+            "description": "Replace the ENTIRE content of a document. ONLY use for genuine full rewrites (>50% of lines changed), or to refresh a document from a file on disk with source_path (e.g. a transcript after rename_speakers.py). For any smaller change, use edit_document — echoing back the whole file for small edits is wasteful.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "Complete new document content"}
+                    "doc_id": {"type": "string", "description": "Id of the document to replace (from its #document-<id> link). Defaults to the active document — pass it whenever the chat has more than one document."},
+                    "content": {"type": "string", "description": "Complete new document content. Omit when source_path is given."},
+                    "source_path": {"type": "string", "description": "Absolute path of a text/markdown file whose contents become the document. Use instead of re-typing a file into content."}
                 },
-                "required": ["content"]
+                "required": []
             }
         }
     },
@@ -1314,7 +1316,11 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
             )
         content = "\n".join(blocks)
     elif tool_type == "update_document":
-        content = args.get("content", "")
+        content = args.get("content", "") or ""
+        if args.get("source_path"):
+            content = f"<source_path>{args['source_path']}</source_path>\n" + content
+        if args.get("doc_id"):
+            content = f"<doc_id>{args['doc_id']}</doc_id>\n" + content
     elif tool_type == "search_chats":
         content = args.get("query", "")
     elif tool_type == "chat_with_model":

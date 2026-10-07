@@ -321,9 +321,14 @@ pip install openai-whisper
 To transcribe an audio/video file (mp4, mp3, wav, m4a, etc.) — including "transcribe this", "get the text out of this recording", "who said what" / speaker-labeled requests — do NOT write ffmpeg/whisper code from scratch. Run the existing pipeline script instead, as a background job for anything more than a minute or two long:
 ```bash
 #!bg
-python3 /app/scripts/transcribe_media.py --input <absolute path to the file> --output <path>.md
+python3 /app/scripts/transcribe_media.py --input <absolute path to the file> --output <upload dir>/<original name without extension>_transcription.md
 ```
-It extracts audio, transcribes with faster-whisper, and speaker-diarizes with pyannote into a `**Speaker 1**` / `**Speaker 2**` labeled Markdown transcript. Pass `--no-diarize` to skip speaker labels (faster, plain transcript only). Once it finishes, read the output file and save it to the user's document library with `create_document`.
+Always write the transcript next to the upload with exactly that name (never /tmp, which is wiped). It extracts audio, transcribes with faster-whisper, and speaker-diarizes with pyannote into a `**Speaker 1**` / `**Speaker 2**` labeled Markdown transcript. Pass `--no-diarize` to skip speaker labels (faster, plain transcript only). Run the command as a real tool call — writing it in your reply does nothing — and never say a job started unless the tool result says "Started background job".
+When it finishes, its output ends with a SPEAKERS preview (sample lines per speaker). Diarization never knows names, so:
+1. Show the user each speaker with your best-guess name, marking guesses, and ask them to confirm or correct. A name a speaker SAYS is usually the person they are talking TO, not themselves.
+2. Apply the confirmed names in one pass: `python3 /app/scripts/speakers.py rename <transcript.md> "Speaker 1=Name" "Speaker 2=Name"`. For a single line the user corrects, use its timestamp: `"00:05:03=Name"`. It updates the file and prints a fresh preview.
+3. Create the document from the file: `create_document` with `source_path=<transcript.md>`; if it already exists, `update_document` with its `doc_id` and `source_path`. The reply gets Word/PDF download links automatically.
+Never re-type the transcript, never relabel speakers with edit_document, never write .docx files or the app's database yourself, and never give file:// links.
 SANDBOX LIMITS: stdin/stdout are pipes, so there is NO interactive terminal — `input()`, `curses`, `termios`, `pygame`, and `tkinter` will all fail. Don't try to RUN interactive terminal games or GUI apps here — verify syntax (`python -c "import py_compile; py_compile.compile('x.py')"`) and tell the user to run it themselves in their own terminal. For anything the USER should play/use interactively (games, UIs, demos), prefer a single self-contained HTML file with `<canvas>` + inline JS — save it via `create_document` with language="html" and tell the user to hit the Run / Preview button (▶) in the document editor toolbar; it renders inline in a sandboxed iframe so the game is playable right there. Works from any machine that can reach the Odysseus UI — no need to copy files out.
 NEVER pipe multi-line Python through `python -c "..."` — shell quoting eats real newlines and `\\n` arrives as literal backslash-n, which Python parses as a line-continuation error on line 1. To run multi-line code, either use the dedicated `python` tool block above, or save to a file first with a quoted HEREDOC (`cat > /tmp/x.py << 'EOF' ... EOF`) and then `python /tmp/x.py`.""",
 
@@ -1697,6 +1702,14 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
         # those too. Non-native / textual-only models keep every pattern,
         # fenced blocks included, since that's their *only* tool channel.
         tool_blocks = parse_tool_blocks(round_response, skip_fenced=is_api_model)
+        if not tool_blocks and is_api_model:
+            # Exception to the gate above: a ```bash fence carrying the
+            # `#!bg` background marker is never an illustrative example — it
+            # is the background-job syntax the system prompt teaches. Native
+            # models (Qwen via vLLM) sometimes write it as text instead of a
+            # tool call; skipping it silently dropped the job while the reply
+            # told the user it was running.
+            tool_blocks = _bg_marked_fenced_bash(round_response)
         if tool_blocks:
             logger.info(f"Agent round {round_num}: {len(tool_blocks)} fenced tool block(s) detected")
 
@@ -1706,6 +1719,32 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
                 f"{len(tool_blocks)} tool blocks. Preview: {resp_preview}")
 
     return tool_blocks, used_native, converted_calls
+
+
+_BG_FENCE_RE = re.compile(r"```(?:bash|sh|shell)[ \t]*\n(.*?)```", re.DOTALL)
+
+
+def _bg_marked_fenced_bash(text: str) -> list:
+    """```bash blocks whose command is marked `#!bg`, as bash ToolBlocks.
+
+    Skips a marked block whose command is an agent tool name written as shell
+    (e.g. `#!bg manage_bg_jobs action=list`): that is a confused tool call,
+    not a program to run in the background.
+    """
+    from src.tool_execution import _split_bg_marker
+    try:
+        from src.tool_schemas import FUNCTION_TOOL_SCHEMAS
+        tool_names = {t["function"]["name"] for t in FUNCTION_TOOL_SCHEMAS}
+    except Exception:
+        tool_names = set()
+    blocks = []
+    for m in _BG_FENCE_RE.finditer(text or ""):
+        body = m.group(1).strip()
+        is_bg, cmd = _split_bg_marker(body)
+        if not is_bg or not cmd or cmd.split()[0] in tool_names:
+            continue
+        blocks.append(ToolBlock("bash", body))
+    return blocks
 
 
 def _append_tool_results(
@@ -3263,11 +3302,11 @@ async def stream_agent_loop(
                         yield f'data: {json.dumps({"type": "doc_stream_delta", "content": content})}\n\n'
                     break
                 elif block.tool_type == "update_document":
-                    # Pre-stream the full replacement content so user sees it immediately
-                    content = block.content.strip()
-                    yield f'data: {json.dumps({"type": "doc_stream_open", "title": "", "language": ""})}\n\n'
-                    yield f'data: {json.dumps({"type": "doc_stream_delta", "content": content})}\n\n'
-                    break
+                    # Pre-stream the full replacement content so user sees it immediately.
+                    # A source_path/doc_id update is resolved server-side and its
+                    # doc_update carries the real body — nothing to pre-stream.
+                    if re.search(r"<(?:source_path|doc_id)>", block.content):
+                        break
 
         # Execute each tool block
         tool_results = []
@@ -3558,12 +3597,14 @@ async def stream_agent_loop(
                     }) + '\n\n'
                 )
 
-            # Same pattern for new documents: put open + download links in the
-            # reply text itself. Users ask for "a Word file" and otherwise get
-            # an editor tab and, at best, a mention of the Export menu — the
-            # model doesn't reliably write the export links out.
-            if (block.tool_type == "create_document" and result.get("doc_id")
-                    and result.get("action") == "create"):
+            # Same pattern for new or replaced documents: put open + download
+            # links in the reply text itself. Users ask for "a Word file" and
+            # otherwise get an editor tab and, at best, a mention of the Export
+            # menu — the model doesn't reliably write the export links out.
+            # update_document too: after fixing a transcript's speaker names the
+            # agent told the user for hours to "use the Export menu" instead.
+            if (block.tool_type in ("create_document", "update_document") and result.get("doc_id")
+                    and result.get("action") in ("create", "update")):
                 _did = result["doc_id"]
                 _dtitle = (result.get("title") or "Document").replace("[", "(").replace("]", ")")
                 _anchor = (
