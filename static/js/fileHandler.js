@@ -50,7 +50,9 @@ export function init(apiBase) {
  * Open file picker dialog
  */
 export function openPicker() {
-  document.getElementById('file-input').click();
+  const input = document.getElementById('file-input');
+  input.value = '';  // so re-picking the same file still fires 'change'
+  input.click();
 }
 
 /**

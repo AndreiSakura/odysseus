@@ -132,6 +132,10 @@ function initializeEventListeners() {
   if (_overflowAttach) _overflowAttach.addEventListener('click', fileHandlerModule.openPicker);
   el('file-input').addEventListener('change', (e)=>{
     for (const f of e.target.files) fileHandlerModule.addFiles([f]);
+    // Reset the input: browsers only fire 'change' when the selection differs
+    // from the input's current value, so without this, picking the same file
+    // again (re-attaching a recording) silently did nothing.
+    e.target.value = '';
     fileHandlerModule.renderAttachStrip();
     // Refocus textarea after file picker closes (mobile keyboard)
     const ta = el('message');
@@ -1838,10 +1842,20 @@ function initializeEventListeners() {
       const natural = menu.scrollHeight;
       const h = Math.min(natural, avail);
       if (natural > avail) {           // only cap + scroll when it doesn't fit
-        menu.style.maxHeight = avail + 'px';
+        menu.style.maxHeight = Math.max(avail, 120) + 'px';
         menu.style.overflowY = 'auto';
       }
-      menu.style.top = (r.top - 8 - h) + 'px';
+      // Keep the whole menu inside the window. Unclamped, a chevron near an
+      // edge (or a layout shift from the document panel) could place it
+      // partly or fully off-screen: the click "did nothing" because the menu
+      // opened where it couldn't be seen.
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const mw = menu.offsetWidth || 170;
+      const mh = Math.min(menu.offsetHeight || h, vh - 16);
+      const left = Math.min(Math.max(8, r.left), vw - mw - 8);
+      const top = Math.min(Math.max(8, r.top - 8 - h), vh - mh - 8);
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
     }
     // Tapping the chevron must NOT steal focus from the message box, or the
     // mobile keyboard collapses. preventDefault on pointerdown keeps the

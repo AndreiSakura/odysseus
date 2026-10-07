@@ -3175,7 +3175,9 @@ body.bg-pattern-sparkles {
       padding: 4px;
       min-width: 170px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-      z-index: 1000;
+      /* Above every docked panel/window (document pane, email windows, …):
+         it's a transient popup opened from the composer. */
+      z-index: 10000;
       /* Container spring-in: the rounded panel scales/grows out of the
          chevron's position before the menu items domino in on top. */
       transform-origin: bottom left;
